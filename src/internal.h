@@ -1221,6 +1221,8 @@ struct parser_ {
 	unsigned line_num, line_num_start;
 	unsigned depth, read_term_slots, num_vars;
 	unsigned nesting_parens, nesting_braces, nesting_brackets;
+	struct tok_frame_ *frames;			// enclosing terms while tokenize() reads a nested one
+	unsigned frames_cnt, frames_max;
 	int quote_char, entered;
 	bool error, if_depth[MAX_IF_DEPTH];
 	bool was_consing:1;

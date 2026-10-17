@@ -407,6 +407,7 @@ void parser_destroy(parser *p)
 	p->save_line = NULL;
 	p->cl = NULL;
 	vartab_free(p);
+	TPL_free(p->frames);
 	TPL_free(p);
 }
 
@@ -5222,32 +5223,35 @@ bool expand_term(parser *p, cell *c)
 	return true;
 }
 
-typedef struct {
+// The state of an enclosing term while a nested one is read
+
+typedef struct tok_frame_ tok_frame;
+
+struct tok_frame_ {
+	char kind;							// '(' grouping, 'f' arguments, '[' list, '{' braces
+	bool was_consing;
 	pl_idx arg_idx, save_idx;
 	unsigned arity;
 	int entered;
 	bool is_arg_processing, is_consing, last_prefix, last_postfix, prev_operator, this_operator;
-} tok_frame;
+};
 
-typedef struct {
-	tok_frame *v;
-	unsigned cnt, max;
-} tok_stack;
-
-static bool push_frame(tok_stack *ts, const tok_frame *f)
+static bool push_frame(parser *p, const tok_frame *f)
 {
-	if (ts->cnt == ts->max) {
-		unsigned max = ts->max ? ts->max * 2 : 16;
-		tok_frame *v = TPL_realloc(ts->v, sizeof(tok_frame) * max);
+	if (p->frames_cnt == p->frames_max) {
+		unsigned max = p->frames_max ? p->frames_max * 2 : 16;
+		tok_frame *frames = TPL_realloc(p->frames, sizeof(tok_frame) * max);
 
-		if (!v)
+		if (!frames) {
+			p->error = true;
 			return false;
+		}
 
-		ts->v = v;
-		ts->max = max;
+		p->frames = frames;
+		p->frames_max = max;
 	}
 
-	ts->v[ts->cnt++] = *f;
+	p->frames[p->frames_cnt++] = *f;
 	return true;
 }
 
@@ -5299,7 +5303,56 @@ static bool finish_functor(parser *p, pl_idx save_idx, unsigned tmp_arity)
 	return true;
 }
 
-static unsigned tokenize_(parser *p, bool is_arg_processing, bool is_consing, tok_stack *ts)
+// What a list does on closing whether or not there was an error
+
+static void close_frame(parser *p, const tok_frame *f)
+{
+	if (f->kind != '[')
+		return;
+
+	if (!p->was_consing)
+		make_interned(p, g_nil_s);
+
+	p->start_term = p->last_close = false;
+	p->was_consing = f->was_consing;
+}
+
+static bool finish_frame(parser *p, const tok_frame *f, unsigned tmp_arity)
+{
+	if (f->kind == 'f')
+		return finish_functor(p, f->save_idx, tmp_arity);
+
+	if (f->kind == '(')
+		return true;
+
+	cell *c = p->cl->cells + f->save_idx;
+	c->num_cells = p->cl->cidx - f->save_idx;
+
+	if (f->kind == '{')
+		return true;
+
+	fix_list(c);
+
+	// Each element has to reduce to one term, or what is left over is taken for the tail
+
+	const cell *tail = c;
+
+	while (is_iso_list(tail))
+		tail = tail + 1 + (tail + 1)->num_cells;
+
+	if ((tail + tail->num_cells) != (p->cl->cells + p->cl->cidx)) {
+		if (!p->do_read_term)
+			fprintf(stderr, "Error: syntax error, operator expected, %s:%d\n", get_loaded(p->m, p->m->filename), p->line_num);
+
+		p->error_desc = "operator_expected";
+		p->error = true;
+		return false;
+	}
+
+	return true;
+}
+
+static unsigned tokenize_(parser *p, bool is_arg_processing, bool is_consing, unsigned base)
 {
 	pl_idx arg_idx = p->cl->cidx, save_idx = 0;
 	bool last_op = true, is_func = false, last_num = false;
@@ -5528,6 +5581,10 @@ next_token:
 			break;
 		}
 
+		// Stack the enclosing state rather than recurse, so nesting depth is bounded by memory
+
+		char kind = 0;
+
 		if (!p->quote_char && !SB_strcmp(p->token, "[")) {
 			save_idx = p->cl->cidx;
 			cell *c = make_interned(p, g_dot_s);
@@ -5536,48 +5593,9 @@ next_token:
 				break;
 
 			set_arity(c, 2);
-			p->start_term = true;
 			p->nesting_brackets++;
-			bool was_consing = p->was_consing;
-			p->was_consing = false;
-			p->entered = '[';
-			tokenize(p, true, true);
-
-			if (!p->was_consing)
-				make_interned(p, g_nil_s);
-
-			p->start_term = p->last_close = false;
-			p->was_consing = was_consing;
-			last_bar = last_op = false;
-
-			if (p->error)
-				break;
-
-			c = p->cl->cells + save_idx;
-			c->num_cells = p->cl->cidx - save_idx;
-			fix_list(c);
-
-			// Each element has to reduce to one term, or what is left over is taken for the tail
-
-			const cell *tail = c;
-
-			while (is_iso_list(tail))
-				tail = tail + 1 + (tail + 1)->num_cells;
-
-			if ((tail + tail->num_cells) != (p->cl->cells + p->cl->cidx)) {
-				if (!p->do_read_term)
-					fprintf(stderr, "Error: syntax error, operator expected, %s:%d\n", get_loaded(p->m, p->m->filename), p->line_num);
-
-				p->error_desc = "operator_expected";
-				p->error = true;
-				break;
-			}
-
-			last_num = false;
-			continue;
-		}
-
-		if (!p->quote_char && !SB_strcmp(p->token, "{")) {
+			kind = '[';
+		} else if (!p->quote_char && !SB_strcmp(p->token, "{")) {
 			save_idx = p->cl->cidx;
 			cell *c = make_interned(p, g_braces_s);
 
@@ -5585,56 +5603,34 @@ next_token:
 				break;
 
 			set_arity(c, 1);
-			p->start_term = true;
 			p->nesting_braces++;
-			p->entered = '{';
-			tokenize(p, false, false);
-			last_bar = false;
-
-			if (p->error)
-				break;
-
-			c = p->cl->cells+save_idx;
-			c->num_cells = p->cl->cidx - save_idx;
-			p->start_term = p->last_close = false;
-			last_op = false;
-			last_num = false;
-			continue;
+			kind = '{';
+		} else if (!p->quote_char && !SB_strcmp(p->token, "(")) {
+			p->nesting_parens++;
+			kind = is_func ? 'f' : '(';
 		}
 
-		if (!p->quote_char && !SB_strcmp(p->token, "(")) {
+		if (kind) {
+			if (!push_frame(p, &(tok_frame){.kind = kind, .was_consing = p->was_consing,
+				.arg_idx = arg_idx, .save_idx = save_idx, .arity = arity, .entered = entered,
+				.is_arg_processing = is_arg_processing, .is_consing = is_consing,
+				.last_prefix = last_prefix, .last_postfix = last_postfix,
+				.prev_operator = prev_operator, .this_operator = this_operator}))
+				break;
+
+			if (kind == '[')
+				p->was_consing = false;
+
 			p->start_term = true;
-			p->nesting_parens++;
-			p->entered = '(';
-
-			// Stack the functor's state rather than recurse, so deep nesting can't overflow the C stack
-
-			if (is_func && push_frame(ts, &(tok_frame){arg_idx, save_idx, arity, entered,
-				is_arg_processing, is_consing, last_prefix, last_postfix, prev_operator, this_operator})) {
-				arg_idx = p->cl->cidx;
-				save_idx = 0;
-				arity = 1;
-				entered = '(';
-				is_arg_processing = true;
-				is_consing = false;
-				last_op = true;
-				is_func = last_num = last_bar = last_prefix = last_postfix = false;
-				prev_operator = this_operator = false;
-				continue;
-			}
-
-			unsigned tmp_arity = tokenize(p, is_func, false);
-			last_bar = false;
-
-			if (p->error)
-				break;
-
-			if (is_func && !finish_functor(p, save_idx, tmp_arity))
-				break;
-
-			is_func = last_op = false;
-			last_num = false;
-			p->start_term = p->last_close = false;
+			p->entered = entered = (kind == 'f') ? '(' : kind;
+			arg_idx = p->cl->cidx;
+			save_idx = 0;
+			arity = 1;
+			is_arg_processing = (kind == 'f') || (kind == '[');
+			is_consing = kind == '[';
+			last_op = true;
+			is_func = last_num = last_bar = last_prefix = last_postfix = false;
+			prev_operator = this_operator = false;
 			continue;
 		}
 
@@ -5812,13 +5808,8 @@ next_token:
 			p->last_empty_arglist = (arg_idx == p->cl->cidx);
 			p->nesting_parens--;
 			analyze_one(p, arg_idx, last_op=false);
-
-			if (ts->cnt) {
-				closed = true;
-				break;
-			}
-
-			return arity;
+			closed = true;
+			break;
 		}
 
 		if (!p->quote_char && !SB_strcmp(p->token, "]")) {
@@ -5843,7 +5834,8 @@ next_token:
 			p->last_close = true;
 			p->nesting_brackets--;
 			analyze(p, arg_idx, last_op=false);
-			return arity;
+			closed = true;
+			break;
 		}
 
 		if (!p->quote_char && !SB_strcmp(p->token, "}")) {
@@ -5868,7 +5860,8 @@ next_token:
 			p->last_close = true;
 			p->nesting_braces--;
 			analyze_one(p, arg_idx, last_op=false);
-			return arity;
+			closed = true;
+			break;
 		}
 
 		p->last_close = false;
@@ -6129,32 +6122,32 @@ next_token:
 		last_bar = false;
 	}
 
-	// Pop back to the enclosing functor
+	// Pop back to the enclosing term, or on an error unwind them all
 
-	if (ts->cnt) {
-		const tok_frame *f = &ts->v[--ts->cnt];
+	while (p->frames_cnt > base) {
+		const tok_frame f = p->frames[--p->frames_cnt];
 		unsigned tmp_arity = closed ? arity : !p->error;
-		arg_idx = f->arg_idx;
-		save_idx = f->save_idx;
-		arity = f->arity;
-		entered = f->entered;
-		is_arg_processing = f->is_arg_processing;
-		is_consing = f->is_consing;
-		last_prefix = f->last_prefix;
-		last_postfix = f->last_postfix;
-		prev_operator = f->prev_operator;
-		this_operator = f->this_operator;
-		closed = last_bar = false;
+		arg_idx = f.arg_idx;
+		save_idx = f.save_idx;
+		arity = f.arity;
+		entered = f.entered;
+		is_arg_processing = f.is_arg_processing;
+		is_consing = f.is_consing;
+		last_prefix = f.last_prefix;
+		last_postfix = f.last_postfix;
+		prev_operator = f.prev_operator;
+		this_operator = f.this_operator;
+		is_func = last_op = last_num = last_bar = closed = false;
+		close_frame(p, &f);
 
-		if (!p->error && finish_functor(p, save_idx, tmp_arity)) {
-			is_func = last_op = false;
-			last_num = false;
+		if (!p->error && finish_frame(p, &f, tmp_arity)) {
 			p->start_term = p->last_close = false;
 			goto next_token;
 		}
-
-		ts->cnt = 0;
 	}
+
+	if (closed)
+		return arity;
 
 	p->depth--;
 	return !p->error ? 1 : 0;
@@ -6162,9 +6155,16 @@ next_token:
 
 unsigned tokenize(parser *p, bool is_arg_processing, bool is_consing)
 {
-	tok_stack ts = {0};
-	unsigned arity = tokenize_(p, is_arg_processing, is_consing, &ts);
-	TPL_free(ts.v);
+	unsigned base = p->frames_cnt;
+	unsigned arity = tokenize_(p, is_arg_processing, is_consing, base);
+
+	// An early return leaves frames behind, only ever on an error
+
+	while (p->frames_cnt > base) {
+		close_frame(p, &p->frames[--p->frames_cnt]);
+		arity = 0;
+	}
+
 	return arity;
 }
 
