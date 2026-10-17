@@ -2297,7 +2297,7 @@ static void check_unique(module *m, rule *r_orig)
 		r_orig->cl.is_unique = true;
 }
 
-static void process_cell(module *m, clause *cl, cell *c, int last_was_colon, bool is_directive, bool any_vars)
+static void process_cell(module *m, clause *cl, cell *c, int last_was_colon, bool is_directive, pl_idx *next_var)
 {
 	cell *body = cl->cells;
 	unsigned specifier;
@@ -2329,7 +2329,19 @@ static void process_cell(module *m, clause *cl, cell *c, int last_was_colon, boo
 	if (!is_directive && ((c+c->num_cells) >= (body + cl->cidx-1)))
 		c->flags |= FLAG_INTERNED_TAIL_CALL;
 
-	if (!any_vars && is_compound(c))
+	if (!is_compound(c))
+		return;
+
+	// next_var only moves forward, so the ground checks over a clause are linear
+
+	pl_idx idx = c - cl->cells;
+
+	if (*next_var <= idx) {
+		for (*next_var = idx + 1; (*next_var < cl->cidx) && !is_var(cl->cells + *next_var); (*next_var)++)
+			;
+	}
+
+	if (*next_var >= (idx + c->num_cells))
 		c->flags |= FLAG_INTERNED_GROUND;
 }
 
@@ -2391,27 +2403,20 @@ void process_clause(module *m, clause *cl)
 
 	bool is_directive = is_check_directive(c);
 	int last_was_colon = 0;
-	pl_idx next_var = 0;	// first var after c, so the ground check is linear
+	pl_idx next_var = 0;	// first var after the cell last checked for groundness
 
 	for (pl_idx i = 0; i < cl->cidx; i++, c++) {
 		if (!is_interned(c))
 			continue;
 
-		if (next_var <= i) {
-			for (next_var = i + 1; (next_var < cl->cidx) && !is_var(cl->cells + next_var); next_var++)
-				;
-		}
-
-		bool any_vars = next_var < (i + c->num_cells);
-
 		// Don't want to match on module qualified predicates
 
 		if (c->val_off == g_colon_s) {
-			process_cell(m, cl, c, 0, is_directive, any_vars);
+			process_cell(m, cl, c, 0, is_directive, &next_var);
 			last_was_colon = 3;
 		} else {
 			last_was_colon--;
-			process_cell(m, cl, c, last_was_colon, is_directive, any_vars);
+			process_cell(m, cl, c, last_was_colon, is_directive, &next_var);
 		}
 	}
 
