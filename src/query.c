@@ -1089,28 +1089,29 @@ static void drain_complete(predicate *pr)
 
 #define TOUCH_SHARED UINT64_MAX
 
-// A binding into a clause's cells (a caller's variable bound to one of its compound arguments) is only
-// made by matching its head, so the first match marks it: which query, and when by its push clock. Made
-// while other queries are alive, nobody can say whose bindings those are, and the mark says so for good.
+// Only matching binds into a clause's cells or runs out of them (a fact's too, see tests/misc/db_purge_window.pl),
+// so the first query to match marks it with its push clock, and a second makes it shared for good.
 
 static void touch_rule(query *q, rule *r)
 {
 	const uint64_t me = q->qid + 1;
+	uint64_t t = __atomic_load_n(&r->touch_qid, __ATOMIC_RELAXED);
 
-	if (r->touch_qid == me)
+	if ((t == me) || (t == TOUCH_SHARED))
 		return;
 
-	if ((r->touch_qid != TOUCH_SHARED) && (q->pl->q_cnt == 1)) {
+	if ((q->pl->q_cnt == 1)
+		|| (!t && __atomic_compare_exchange_n(&r->touch_qid, &t, me, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED))) {
 		r->touch_qid = me;
 		r->touch_at = q->push_clock;
 	} else
-		r->touch_qid = TOUCH_SHARED;
+		__atomic_store_n(&r->touch_qid, TOUCH_SHARED, __ATOMIC_RELAXED);
 }
 
 // Where a reclaimed clause waits to be freed. If this query made the only live bindings into it, they
 // all came after its first match, so it goes with the newest choicepoint pushed by then: backtracking
 // there undoes every one of them. With no live binding into it, the current choicepoint will do. Any
-// other case waits for the query to end.
+// other case waits for the query to end, hand_off() having taken those another query holds.
 
 static list *reclaim_list(query *q, const rule *r)
 {
@@ -1139,6 +1140,66 @@ static list *reclaim_list(query *q, const rule *r)
 	return l ? l : &q->undo;
 }
 
+static pl_atomic uint64_t g_query_id = 0;	// process-wide; taken under live_guard, so a query is live once it has one
+
+// Freed once every query alive now has ended, as any of them might hold it.
+
+void retain_rule(prolog *pl, rule *r)
+{
+	acquire_lock(&pl->live_guard);
+	r->touch_at = g_query_id;
+	list_push_back(&pl->retained, r);
+	release_lock(&pl->live_guard);
+}
+
+// To the live query that alone touched r, to free when it ends; false if that query has gone.
+
+static bool adopt_rule(prolog *pl, rule *r)
+{
+	bool taken = false;
+	acquire_lock(&pl->live_guard);
+
+	for (query *o = pl->live_queries; o; o = o->live_next) {
+		if (o->qid + 1 == r->touch_qid) {
+			list_push_back(&o->adopted, r);
+			taken = true;
+			break;
+		}
+	}
+
+	release_lock(&pl->live_guard);
+	return taken;
+}
+
+// Another query may hold r, so it takes it: the one that touched it at its end, several at every live query's.
+
+static bool hand_off(query *q, rule *r)
+{
+	const uint64_t me = q->qid + 1, t = r->touch_qid;
+
+	if (!t || (t == me) || (q->pl->q_cnt == 1))
+		return false;
+
+	if (t == TOUCH_SHARED) {
+		retain_rule(q->pl, r);
+		return true;
+	}
+
+	return adopt_rule(q->pl, r);
+}
+
+// A dynamic clause with no query to place it goes now, unless a live query touched it.
+
+void release_rule(prolog *pl, rule *r)
+{
+	if (r->touch_qid == TOUCH_SHARED)
+		retain_rule(pl, r);
+	else if (!r->touch_qid || !adopt_rule(pl, r)) {
+		clear_clause(&r->cl);
+		TPL_free(r);
+	}
+}
+
 // An undo list, not q->dirty: rules there are freed with clear_clause() only, while q->dirty pays
 // index_remove_clause() at teardown - an sl_rem() per rule against an index that can hold hundreds of
 // thousands of entries with many sharing a key, which once cost giso's full tester 80 seconds.
@@ -1150,6 +1211,10 @@ static void reclaim_rule(query *q, predicate *pr, rule *r)
 		index_remove_clause(pr, r);
 
 	r->cl.is_deleted = true;
+
+	if (hand_off(q, r))
+		return;
+
 	q->dirty_cnt++;
 	undo_item *u = TPL_calloc(1, sizeof(undo_item));
 
@@ -1164,54 +1229,15 @@ static void reclaim_rule(query *q, predicate *pr, rule *r)
 	list_push_back(reclaim_list(q, r), u);
 }
 
-void leave_predicate(query *q, predicate *pr, uint64_t dbgen, bool is_final)
+// No reader is left in pr, so its retracted clauses leave the chain; the caller holds pr's module lock under threads.
+
+void reclaim_predicate(query *q, predicate *pr)
 {
-	if (!pr)
-		return;
-
-	q->st.iter = NULL;
-	q->st.kchain = false;
-
-	if (!pr->is_dynamic || !pr->refcnt)
-		return;
-
-	// Must span the decrement, not just the purge: shrinking it lets a
-	// thread run a clause that has been reclaimed. See
-	// tests/misc/db_purge_window.pl.
-
-	const bool mt = pr->m->pl->is_multithreaded;
-
-	if (mt)
-		prolog_lock_mod(pr->m->pl, pr->m);
-
-	if (pr->drain_gen && (dbgen < pr->drain_gen) && (pr->drain_old > 0))
-		pr->drain_old--;
-
-	if (--pr->refcnt != 0) {
-		if (pr->drain_gen && !pr->drain_old)
-			drain_complete(pr);
-
-		if (!pr->drain_gen && list_count(&pr->dirty) && !pr->is_abolished) {
-			pr->drain_gen = ++pr->m->pl->dbgen;
-			pr->drain_old = pr->refcnt;
-		}
-
-		if (mt) prolog_unlock_mod(pr->m->pl, pr->m);
-		return;
-	}
-
 	pr->drain_gen = 0;
 	pr->drain_old = 0;
 
-	if ((!list_count(&pr->dirty) && !list_count(&pr->delinked)) || pr->is_abolished) {
-		if (mt) prolog_unlock_mod(pr->m->pl, pr->m);
+	if (!list_count(&pr->dirty) && !list_count(&pr->delinked))
 		return;
-	}
-
-	// Predicate is no longer being used
-
-	//printf("*** leave %u, %s/%u, in_retractall=%d, is_final=%d, retry=%d\n",
-	//	(unsigned)list_count(&pr->dirty), C_STR(q, &pr->key), get_arity(&pr->key), q->in_retractall, is_final, q->retry);
 
 	rule *r;
 
@@ -1241,6 +1267,45 @@ void leave_predicate(query *q, predicate *pr, uint64_t dbgen, bool is_final)
 
 		recheck_var_in_indexed_args(pr);
 	}
+}
+
+void leave_predicate(query *q, predicate *pr, uint64_t dbgen, bool is_final)
+{
+	if (!pr)
+		return;
+
+	q->st.iter = NULL;
+	q->st.kchain = false;
+
+	if (!pr->is_dynamic || !pr->refcnt)
+		return;
+
+	// Must span the decrement, not just the purge: shrinking it lets a
+	// thread run a clause that has been reclaimed. See
+	// tests/misc/db_purge_window.pl.
+
+	const bool mt = pr->m->pl->is_multithreaded;
+
+	if (mt)
+		prolog_lock_mod(pr->m->pl, pr->m);
+
+	if (pr->drain_gen && (dbgen < pr->drain_gen) && (pr->drain_old > 0))
+		pr->drain_old--;
+
+	if (--pr->refcnt != 0) {
+		if (pr->drain_gen && !pr->drain_old)
+			drain_complete(pr);
+
+		if (!pr->drain_gen && list_count(&pr->dirty)) {
+			pr->drain_gen = ++pr->m->pl->dbgen;
+			pr->drain_old = pr->refcnt;
+		}
+
+		if (mt) prolog_unlock_mod(pr->m->pl, pr->m);
+		return;
+	}
+
+	reclaim_predicate(q, pr);
 
 	if (mt)
 		prolog_unlock_mod(pr->m->pl, pr->m);
@@ -1337,9 +1402,7 @@ static void purge_reclaimed(query *q)
 	while (r) {
 		rule *next = list_next(r);
 
-		// abolish/1 moves clauses here while a reader may still be iterating them.
-
-		if (r->cl.is_purgeable && !r->owner->refcnt && !clause_holds_instr(q, &r->cl, r)) {
+		if (r->cl.is_purgeable && !clause_holds_instr(q, &r->cl, r)) {
 			// reclaim_rule() only drops index entries while the predicate still has clauses,
 			// so an index can still name this rule. query_purge_dirty_list() does the same
 			// before freeing; skipping it leaves the skiplist pointing into freed cells.
@@ -3676,6 +3739,48 @@ bool execute(query *q, cell *cells, unsigned num_vars)
 	return start(q);
 }
 
+// Off live_queries, freeing what this query adopted and what retained no remaining query was alive to touch.
+
+static void leave_live(query *q)
+{
+	prolog *pl = q->pl;
+	list doomed;
+	list_init(&doomed);
+	acquire_lock(&pl->live_guard);
+
+	if (q->live_prev)
+		q->live_prev->live_next = q->live_next;
+	else
+		pl->live_queries = q->live_next;
+
+	if (q->live_next)
+		q->live_next->live_prev = q->live_prev;
+
+	rule *r;
+
+	while ((r = list_pop_front(&q->adopted)) != NULL)
+		list_push_back(&doomed, r);
+
+	if (list_count(&pl->retained)) {
+		uint64_t oldest = UINT64_MAX;
+
+		for (const query *o = pl->live_queries; o; o = o->live_next) {
+			if (o->qid < oldest)
+				oldest = o->qid;
+		}
+
+		while (((r = list_front(&pl->retained)) != NULL) && (r->touch_at <= oldest))
+			list_push_back(&doomed, list_pop_front(&pl->retained));
+	}
+
+	release_lock(&pl->live_guard);
+
+	while ((r = list_pop_front(&doomed)) != NULL) {
+		clear_clause(&r->cl);
+		TPL_free(r);
+	}
+}
+
 void query_destroy(query *q)
 {
 	if (!q)
@@ -3794,14 +3899,13 @@ void query_destroy(query *q)
 	TPL_free(q->terms);
 	TPL_free(q->engine_ball);
 
+	leave_live(q);
 	q->pl->q_cnt--;
 	TPL_free(q);
 }
 
 static query *query_create_(module *m, bool is_toplevel)
 {
-	static pl_atomic uint64_t g_query_id = 0;
-
 #ifdef INDEX_PROFILE
 	if (!g_index_profile_registered) {
 		g_index_profile_registered = true;
@@ -3819,9 +3923,17 @@ static query *query_create_(module *m, bool is_toplevel)
 
 	q->parser_m = m;
 
+	q->pl = m->pl;
+	acquire_lock(&q->pl->live_guard);
 	const bool is_main_root = !g_query_id;
 	q->qid = g_query_id++;
-	q->pl = m->pl;
+	q->live_next = q->pl->live_queries;
+
+	if (q->live_next)
+		q->live_next->live_prev = q;
+
+	q->pl->live_queries = q;
+	release_lock(&q->pl->live_guard);
 	q->pl->q_cnt++;
 
 	if (is_main_root)
@@ -3859,6 +3971,7 @@ static query *query_create_(module *m, bool is_toplevel)
 	#define BAIL_OUT() {									\
 		if (is_main_root) m->pl->main_thread->q = NULL;		\
 		q->pl->q_cnt--;										\
+		leave_live(q);										\
 		mp_int_clear(&q->tmp_ival);							\
 		mp_rat_clear(&q->tmp_irat);							\
 		if (q->frame_pages) TPL_free(q->frame_pages[0]);	\

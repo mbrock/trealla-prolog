@@ -487,7 +487,8 @@ struct rule_ {
 	const char *filename;
 	uint64_t db_id, matched, attempted, tcos;
 	uint64_t dbgen_created, dbgen_retracted;
-	uint64_t touch_qid, touch_at;		// the query that first bound into its cells (qid+1), and its push clock then
+	uint64_t touch_qid, touch_at;		// the query that first bound into its cells (qid+1), and its push clock then;
+										// on pl->retained, touch_at is the first qid it need not wait for
 	unsigned line_num_start, line_num_end;
 	clause cl;
 };
@@ -1046,6 +1047,8 @@ struct query_ {
 	var_item *tabs;
 	size_t tabs_size;
 	list dirty, undo;
+	list adopted;						// clauses other queries reclaimed that only this one touched, freed at its end
+	query *live_prev, *live_next;		// on pl->live_queries
 	uint32_t dirty_cnt;					// rules on dirty awaiting purge_reclaimed()
 	uint32_t purge_at;					// the count at which to try again; rises so a pass that
 										// frees nothing cannot make every later goal rescan
@@ -1335,6 +1338,9 @@ struct prolog_ {
 	skiplist *flagtab;					// flag/3 values, keyed by flag_key()
 	uint8_t op_names[OP_NAMES_BYTES];	// see note_op_name()
 	lock guard;
+	lock live_guard;					// live_queries, every query's adopted and retained
+	query *live_queries;
+	list retained;						// clauses waiting for every query alive when they came here to end
 	uint64_t s_last, s_cnt, seed, thr_cnt;
 	pl_refcnt q_cnt, dbgen;
 	pl_atomic bool is_multithreaded;

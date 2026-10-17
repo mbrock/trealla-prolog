@@ -50,6 +50,7 @@ void format_template(module *m, char *tmpbuf, size_t buflen, const char *name, u
 void push_property(module *m, const char *name, unsigned arity, const char *type);
 void push_template(module *m, const char *name, unsigned arity, const builtins *ptr);
 void retract_from_db(module *m, rule *r);
+void detach_clauses(predicate *pr);
 bool do_use_module_1(module *m, cell *p);
 bool do_use_module_2(module *m, cell *p);
 extern int g_no_jit_index;

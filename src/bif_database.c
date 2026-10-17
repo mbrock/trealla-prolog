@@ -224,35 +224,6 @@ static bool bif_sys_clause_2(query *q)
 	return do_clause_2(q, DO_CLAUSE_STATIC);
 }
 
-static void predicate_purge_dirty_list(predicate *pr)
-{
-	unsigned cnt = 0;
-	rule *r;
-
-	// Already out of the chain, so only freed.
-
-	while ((r = list_pop_front(&pr->delinked)) != NULL) {
-		clear_clause(&r->cl);
-		TPL_free(r);
-		cnt++;
-	}
-
-	while ((r = list_pop_front(&pr->dirty)) != NULL) {
-		predicate_delink(pr, r);
-		clear_clause(&r->cl);
-		TPL_free(r);
-		cnt++;
-	}
-
-	if (cnt && (pr->is_var_in_head || pr->is_var_in_first_arg || pr->is_var_in_idx2_arg))
-		recheck_var_in_indexed_args(pr);
-
-#if 0
-	if (cnt)
-		printf("*** predicate_purge_dirty_list %u\n", cnt);
-#endif
-}
-
 bool do_retract(query *q, module *m, cell *p1, pl_ctx p1_ctx, enum clause_type is_retract)
 {
 	if (!q->retry) {
@@ -588,43 +559,25 @@ static bool bif_iso_retractall_1(query *q)
 	return true;
 }
 
-// Every clause of pr retracted and reclaimed, its index freed, and with
-// hard, pr marked abolished, which a stale cached pointer to it can see.
+// Every clause retracted, as retract/1 would, for the last reader to reclaim; hard also marks pr abolished for stale cached pointers.
 
 static void abolish_predicate(query *q, predicate *pr, bool hard)
 {
-	for (rule *r = pr->head; r; r = r->next)
-		retract_from_db(r->owner->m, r);
+	if (pr->is_dynamic) {
+		for (rule *r = pr->head; r; r = r->next)
+			retract_from_db(r->owner->m, r);
+	} else
+		detach_clauses(pr);			// static, as destroy_module/1 finds, with no readers counted
 
-	if (!pr->refcnt) {
-		predicate_purge_dirty_list(pr);
-	} else {
-		rule *r;
-
-		while ((r = list_pop_front(&pr->delinked)) != NULL)
-			list_push_back(&q->dirty, r);
-
-		while ((r = list_pop_front(&pr->dirty)) != NULL)
-			list_push_back(&q->dirty, r);
-	}
-
-	index_free(pr);
-	pr->needs_index = false;
-	pr->no_idx3 = false;
-	pr->is_var_in_head = false;
-	pr->is_var_in_first_arg = false;
-	pr->is_open_first_arg = false;
-	pr->is_var_in_idx2_arg = false;
-	pr->idx2_arg = 0;
 	pr->is_processed = false;
-	pr->head = pr->tail = NULL;
-	pr->cnt = 0;
 
 	if (hard) {
 		pr->is_abolished = true;
 		q->pl->pred_gen++;
 	}
 
+	if (pr->is_dynamic && !pr->refcnt)
+		reclaim_predicate(q, pr);
 }
 
 bool do_abolish(query *q, cell *c_orig, cell *c_pi, bool hard)

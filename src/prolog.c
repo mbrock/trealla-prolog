@@ -1109,6 +1109,15 @@ void pl_destroy(prolog *pl)
 
 	threads_destroy(pl);
 
+	// Every query has gone, so whatever they might have held can go too.
+
+	rule *r;
+
+	while ((r = list_pop_front(&pl->retained)) != NULL) {
+		clear_clause(&r->cl);
+		TPL_free(r);
+	}
+
 	module_destroy(pl->system_m);
 	module_destroy(pl->user_m);
 	sl_destroy(pl->biftab);
@@ -1236,6 +1245,7 @@ prolog *pl_create()
 	pl->streams[2].eof_action = eof_action_reset;
 
 	init_lock(&pl->guard);
+	init_lock(&pl->live_guard);
 
 	// Unconditional: the thread table holds the main thread, and
 	// q->pl->main_thread is dereferenced by interrupt_pending() whether

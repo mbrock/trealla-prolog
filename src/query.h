@@ -151,6 +151,9 @@ void unwind_stream(query *q, int n);
 bool throw_stream_gone(query *q, stream *str);
 void leave_predicate(query *q, predicate *pr, uint64_t dbgen, bool is_final);
 void leave_predicate_and_drop(query *q, predicate *pr, bool is_final);
+void reclaim_predicate(query *q, predicate *pr);
+void retain_rule(prolog *pl, rule *r);
+void release_rule(prolog *pl, rule *r);
 void drop_choice(query *q);
 
 #if USE_THREADS

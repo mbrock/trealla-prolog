@@ -447,19 +447,33 @@ predicate *create_predicate(module *m, cell *c, bool *created)
 	return pr;
 }
 
-static void abolish_predicate(predicate *pr)
+// Every clause out of pr: a dynamic one goes unless a live query touched it, a static one, whose readers nothing counts, waits for every live query.
+
+void detach_clauses(predicate *pr)
 {
-	while (pr->head) {
-		rule *tmp = pr->head;
-		pr->head = pr->head->next;
-		clear_clause(&tmp->cl);
-		TPL_free(tmp);
-		pr->cnt--;
+	prolog *pl = pr->m->pl;
+	list gone;
+	list_init(&gone);
+	rule *r;
+
+	list_init(&pr->dirty);			// its clauses are still in the chain
+
+	while ((r = list_pop_front(&pr->delinked)) != NULL)
+		list_push_back(&gone, r);
+
+	for (r = pr->head; r; r = r->next) {
+		if (!r->dbgen_retracted)
+			pr->last_modified = r->dbgen_retracted = ++pl->dbgen;
+
+		list_push_back(&gone, r);
 	}
 
 	pr->head = pr->tail = NULL;
+	pr->cnt = 0;
 	index_free(pr);
 	pr->needs_index = false;
+	pr->no_idx3 = false;
+	pr->idx3_want = 0;
 	pr->is_var_in_head = false;
 	pr->is_var_in_first_arg = false;
 	pr->is_open_first_arg = false;
@@ -470,6 +484,15 @@ static void abolish_predicate(predicate *pr)
 		unshare_cells(pr->meta_args, pr->meta_args->num_cells);
 		TPL_free(pr->meta_args);
 		pr->meta_args = NULL;
+	}
+
+	// Only now the index has gone, as it borrows keys from the clauses' cells.
+
+	while ((r = list_pop_front(&gone)) != NULL) {
+		if (pr->is_dynamic)
+			release_rule(pl, r);
+		else
+			retain_rule(pl, r);
 	}
 }
 
@@ -3226,12 +3249,16 @@ static bool unload_realfile(module *m, const char *filename)
 
 		purge_properties(pr);
 
-		if (!pr->refcnt)
-			abolish_predicate(pr);
-		else {
+		// A query still inside it keeps its clauses until the last such query leaves.
+
+		if (pr->refcnt) {
+			for (rule *r = pr->head; r; r = r->next)
+				retract_from_db(m, r);
+
 			pr->is_abolished = true;
 			m->pl->pred_gen++;
-		}
+		} else
+			detach_clauses(pr);
 
 		pr = list_next(pr);
 	}
@@ -3815,6 +3842,11 @@ static predicate *revive_buried(module *m, const cell *c)
 {
 	for (predicate *pr = list_front(&m->buried); pr; pr = list_next(pr)) {
 		if ((pr->key.val_off != c->val_off) || (get_arity(&pr->key) != get_arity(c)))
+			continue;
+
+		// Still read, or holding clauses for the last reader to reclaim.
+
+		if (pr->refcnt || pr->head || list_count(&pr->delinked))
 			continue;
 
 		list_remove(&m->buried, pr);
