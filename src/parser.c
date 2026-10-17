@@ -5223,20 +5223,30 @@ bool expand_term(parser *p, cell *c)
 	return true;
 }
 
-// The state of an enclosing term while a nested one is read
+// What tokenize_() carries from token to token, stacked while a nested term is read
 
-typedef struct tok_frame_ tok_frame;
-
-struct tok_frame_ {
-	char kind;							// '(' grouping, 'f' arguments, '[' list, '{' braces
-	bool was_consing;
+typedef struct {
 	pl_idx arg_idx, save_idx;
 	unsigned arity;
 	int entered;
 	bool is_arg_processing, is_consing, last_prefix, last_postfix, prev_operator, this_operator;
+} tok_state;
+
+typedef struct tok_frame_ tok_frame;
+
+struct tok_frame_ {
+	tok_state st;
+	char kind;							// '(' grouping, 'f' arguments, '[' list, '{' braces
+	bool was_consing;
 };
 
-static bool push_frame(parser *p, const tok_frame *f)
+static tok_state tok_start(parser *p, int entered, bool is_arg_processing, bool is_consing)
+{
+	return (tok_state){.arg_idx = p->cl->cidx, .arity = 1, .entered = entered,
+		.is_arg_processing = is_arg_processing, .is_consing = is_consing};
+}
+
+static bool push_parse_frame(parser *p, const tok_frame *f)
 {
 	if (p->frames_cnt == p->frames_max) {
 		unsigned max = p->frames_max ? p->frames_max * 2 : 16;
@@ -5320,13 +5330,13 @@ static void close_frame(parser *p, const tok_frame *f)
 static bool finish_frame(parser *p, const tok_frame *f, unsigned tmp_arity)
 {
 	if (f->kind == 'f')
-		return finish_functor(p, f->save_idx, tmp_arity);
+		return finish_functor(p, f->st.save_idx, tmp_arity);
 
 	if (f->kind == '(')
 		return true;
 
-	cell *c = p->cl->cells + f->save_idx;
-	c->num_cells = p->cl->cidx - f->save_idx;
+	cell *c = p->cl->cells + f->st.save_idx;
+	c->num_cells = p->cl->cidx - f->st.save_idx;
 
 	if (f->kind == '{')
 		return true;
@@ -5354,19 +5364,14 @@ static bool finish_frame(parser *p, const tok_frame *f, unsigned tmp_arity)
 
 static unsigned tokenize_(parser *p, bool is_arg_processing, bool is_consing, unsigned base)
 {
-	pl_idx arg_idx = p->cl->cidx, save_idx = 0;
-	bool last_op = true, is_func = false, last_num = false;
-	bool last_bar = false, last_prefix = false, last_postfix = false;
-	bool prev_operator = false, this_operator = false;
-	int entered = p->entered;
-	unsigned arity = 1;
+	tok_state st = tok_start(p, p->entered, is_arg_processing, is_consing);
+	bool last_op = true, is_func = false, last_num = false, last_bar = false;
 	bool closed = false;
-	p->depth++;
 
 next_token:
-	while (get_token(p, last_op, last_postfix)) {
-		prev_operator = this_operator;
-		this_operator = false;
+	while (get_token(p, last_op, st.last_postfix)) {
+		st.prev_operator = st.this_operator;
+		st.this_operator = false;
 
 		// Functional notation needs the ( straight after the name, so look before any layout or comment is skipped
 
@@ -5586,7 +5591,7 @@ next_token:
 		char kind = 0;
 
 		if (!p->quote_char && !SB_strcmp(p->token, "[")) {
-			save_idx = p->cl->cidx;
+			st.save_idx = p->cl->cidx;
 			cell *c = make_interned(p, g_dot_s);
 
 			if (!c)
@@ -5596,7 +5601,7 @@ next_token:
 			p->nesting_brackets++;
 			kind = '[';
 		} else if (!p->quote_char && !SB_strcmp(p->token, "{")) {
-			save_idx = p->cl->cidx;
+			st.save_idx = p->cl->cidx;
 			cell *c = make_interned(p, g_braces_s);
 
 			if (!c)
@@ -5611,30 +5616,21 @@ next_token:
 		}
 
 		if (kind) {
-			if (!push_frame(p, &(tok_frame){.kind = kind, .was_consing = p->was_consing,
-				.arg_idx = arg_idx, .save_idx = save_idx, .arity = arity, .entered = entered,
-				.is_arg_processing = is_arg_processing, .is_consing = is_consing,
-				.last_prefix = last_prefix, .last_postfix = last_postfix,
-				.prev_operator = prev_operator, .this_operator = this_operator}))
+			if (!push_parse_frame(p, &(tok_frame){.st = st, .kind = kind, .was_consing = p->was_consing}))
 				break;
 
 			if (kind == '[')
 				p->was_consing = false;
 
 			p->start_term = true;
-			p->entered = entered = (kind == 'f') ? '(' : kind;
-			arg_idx = p->cl->cidx;
-			save_idx = 0;
-			arity = 1;
-			is_arg_processing = (kind == 'f') || (kind == '[');
-			is_consing = kind == '[';
+			p->entered = (kind == 'f') ? '(' : kind;
+			st = tok_start(p, p->entered, (kind == 'f') || (kind == '['), kind == '[');
 			last_op = true;
-			is_func = last_num = last_bar = last_prefix = last_postfix = false;
-			prev_operator = this_operator = false;
+			is_func = last_num = last_bar = false;
 			continue;
 		}
 
-		if (!p->quote_char && !is_arg_processing && !is_consing && last_op && !last_postfix && !SB_strcmp(p->token, ",")) {
+		if (!p->quote_char && !st.is_arg_processing && !st.is_consing && last_op && !st.last_postfix && !SB_strcmp(p->token, ",")) {
 			if (!p->do_read_term)
 				fprintf(stderr, "Error: syntax error, quotes needed around operator '%s', %s:%d\n", SB_cstr(p->token), get_loaded(p->m, p->m->filename), p->line_num);
 
@@ -5643,7 +5639,7 @@ next_token:
 			break;
 		}
 
-		if (!p->quote_char && is_arg_processing && !is_consing && p->is_op /*&& last_op*/
+		if (!p->quote_char && st.is_arg_processing && !st.is_consing && p->is_op /*&& last_op*/
 			&& SB_strcmp(p->token, "|")
  			&& SB_strcmp(p->token, ",")
  			) {
@@ -5659,8 +5655,8 @@ next_token:
 			}
 		}
 
-		if (!p->quote_char && is_consing && !SB_strcmp(p->token, ",")) {
-			if ((arg_idx == p->cl->cidx) || !p->cl->cidx) {
+		if (!p->quote_char && st.is_consing && !SB_strcmp(p->token, ",")) {
+			if ((st.arg_idx == p->cl->cidx) || !p->cl->cidx) {
 				if (!p->do_read_term)
 					fprintf(stderr, "Error: syntax error, missing arg '%s', %s:%d\n", p->save_line?p->save_line:"", get_loaded(p->m, p->m->filename), p->line_num);
 
@@ -5700,11 +5696,11 @@ next_token:
 		}
 
 		if (!p->quote_char &&
-			((is_arg_processing && !SB_strcmp(p->token, ",")) ||
-			(is_consing && !p->was_consing && !p->start_term
+			((st.is_arg_processing && !SB_strcmp(p->token, ",")) ||
+			(st.is_consing && !p->was_consing && !p->start_term
 				&& (!SB_strcmp(p->token, ",") || !SB_strcmp(p->token, "|")))
 			)) {
-			if ((arg_idx == p->cl->cidx) || !p->cl->cidx) {
+			if ((st.arg_idx == p->cl->cidx) || !p->cl->cidx) {
 				if (!p->do_read_term)
 					fprintf(stderr, "Error: syntax error, missing arg '%s', %s:%d\n", p->save_line?p->save_line:"", get_loaded(p->m, p->m->filename), p->line_num);
 
@@ -5713,10 +5709,10 @@ next_token:
 				break;
 			}
 
-			if (!(is_consing ? analyze(p, arg_idx, last_op) : analyze_one(p, arg_idx, last_op)))
+			if (!(st.is_consing ? analyze(p, st.arg_idx, last_op) : analyze_one(p, st.arg_idx, last_op)))
 				break;
 
-			arg_idx = p->cl->cidx;
+			st.arg_idx = p->cl->cidx;
 
 			if (*p->srcptr == ',') {
 				if (!p->do_read_term)
@@ -5727,12 +5723,12 @@ next_token:
 				break;
 			}
 
-			if (is_arg_processing)
-				arity++;
+			if (st.is_arg_processing)
+				st.arity++;
 
-			if (is_consing && !SB_strcmp(p->token, "|")) {
+			if (st.is_consing && !SB_strcmp(p->token, "|")) {
 				p->was_consing = last_bar = true;
-				//is_consing = false;
+				//st.is_consing = false;
 			}
 
 			p->last_close = false;
@@ -5741,7 +5737,7 @@ next_token:
 			continue;
 		}
 
-		if (!p->is_quoted /*&& is_consing*/ && (p->start_term || last_op) && !SB_strcmp(p->token, "|")) {
+		if (!p->is_quoted /*&& st.is_consing*/ && (p->start_term || last_op) && !SB_strcmp(p->token, "|")) {
 			if (!p->do_read_term)
 				fprintf(stderr, "Error: syntax error, parsing '%s', %s:%d\n", p->save_line?p->save_line:"", get_loaded(p->m, p->m->filename), p->line_num);
 
@@ -5750,7 +5746,7 @@ next_token:
 			break;
 		}
 
-		if (!p->is_quoted && p->was_consing && is_consing && !SB_strcmp(p->token, "|")) {
+		if (!p->is_quoted && p->was_consing && st.is_consing && !SB_strcmp(p->token, "|")) {
 			if (!p->do_read_term)
 				fprintf(stderr, "Error: syntax error, parsing list '%s', %s:%d\n", p->save_line?p->save_line:"", get_loaded(p->m, p->m->filename), p->line_num);
 
@@ -5772,7 +5768,7 @@ next_token:
 		// allowed for a functor, and only for a functor. Bare () stays a
 		// syntax error, as do [] spelled this way and {}.
 
-		bool empty_arglist = is_arg_processing && p->flags.empty_args
+		bool empty_arglist = st.is_arg_processing && p->flags.empty_args
 			&& !p->quote_char && !SB_strcmp(p->token, ")");
 
 		if (!p->quote_char && p->start_term && !empty_arglist &&
@@ -5786,7 +5782,7 @@ next_token:
 		}
 
 		if (!p->quote_char && !SB_strcmp(p->token, ")")) {
-			if ((arg_idx == p->cl->cidx) && !empty_arglist) {
+			if ((st.arg_idx == p->cl->cidx) && !empty_arglist) {
 				if (!p->do_read_term)
 					fprintf(stderr, "Error: syntax error, missing arg '%s', %s:%d\n", p->save_line?p->save_line:"", get_loaded(p->m, p->m->filename), p->line_num);
 
@@ -5795,7 +5791,7 @@ next_token:
 				break;
 			}
 
-			if (entered != '(') {
+			if (st.entered != '(') {
 				if (!p->do_read_term)
 					printf("Error: syntax error, mismatched parens/brackets/braces, %s:%d\n", get_loaded(p->m, p->m->filename), p->line_num);
 
@@ -5805,15 +5801,15 @@ next_token:
 			}
 
 			p->last_close = true;
-			p->last_empty_arglist = (arg_idx == p->cl->cidx);
+			p->last_empty_arglist = (st.arg_idx == p->cl->cidx);
 			p->nesting_parens--;
-			analyze_one(p, arg_idx, last_op=false);
+			analyze_one(p, st.arg_idx, last_op=false);
 			closed = true;
 			break;
 		}
 
 		if (!p->quote_char && !SB_strcmp(p->token, "]")) {
-			if (arg_idx == p->cl->cidx) {
+			if (st.arg_idx == p->cl->cidx) {
 				if (!p->do_read_term)
 					fprintf(stderr, "Error: syntax error, missing arg '%s', %s:%d\n", p->save_line?p->save_line:"", get_loaded(p->m, p->m->filename), p->line_num);
 
@@ -5822,7 +5818,7 @@ next_token:
 				break;
 			}
 
-			if (entered != '[') {
+			if (st.entered != '[') {
 				if (!p->do_read_term)
 					printf("Error: syntax error, mismatched parens/brackets/braces, %s:%d\n", get_loaded(p->m, p->m->filename), p->line_num);
 
@@ -5833,13 +5829,13 @@ next_token:
 
 			p->last_close = true;
 			p->nesting_brackets--;
-			analyze(p, arg_idx, last_op=false);
+			analyze(p, st.arg_idx, last_op=false);
 			closed = true;
 			break;
 		}
 
 		if (!p->quote_char && !SB_strcmp(p->token, "}")) {
-			if (arg_idx == p->cl->cidx) {
+			if (st.arg_idx == p->cl->cidx) {
 				if (!p->do_read_term)
 					fprintf(stderr, "Error: syntax error, missing arg '%s', %s:%d\n", p->save_line?p->save_line:"", get_loaded(p->m, p->m->filename), p->line_num);
 
@@ -5848,7 +5844,7 @@ next_token:
 				break;
 			}
 
-			if (entered != '{') {
+			if (st.entered != '{') {
 				if (!p->do_read_term)
 					fprintf(stderr, "Error: syntax error, mismatched parens/brackets/braces, %s:%d\n", get_loaded(p->m, p->m->filename), p->line_num);
 
@@ -5859,7 +5855,7 @@ next_token:
 
 			p->last_close = true;
 			p->nesting_braces--;
-			analyze_one(p, arg_idx, last_op=false);
+			analyze_one(p, st.arg_idx, last_op=false);
 			closed = true;
 			break;
 		}
@@ -5906,7 +5902,7 @@ next_token:
 
 			// A postfix operator completes an operand, so what follows it is read as infix where it can be
 
-			priority = search_op(p->m, SB_cstr(p->token), &specifier, last_op && !last_postfix);
+			priority = search_op(p->m, SB_cstr(p->token), &specifier, last_op && !st.last_postfix);
 		}
 
 		const int op_priority = priority;
@@ -5944,7 +5940,7 @@ next_token:
 
 			int nextch = *s;
 
-			if (IS_PREFIX(specifier) && p->is_symbol && last_prefix)
+			if (IS_PREFIX(specifier) && p->is_symbol && st.last_prefix)
 				;
 			else if ((nextch == ',')
 				|| (nextch == ';')
@@ -5953,19 +5949,19 @@ next_token:
 				|| (nextch == ']')
 				|| (nextch == '}')
 			) {
-				if ((SB_strcmp(p->token, "-") && SB_strcmp(p->token, "+")) || is_consing) {
+				if ((SB_strcmp(p->token, "-") && SB_strcmp(p->token, "+")) || st.is_consing) {
 					specifier = 0;
 					priority = 0;
 				}
 			}
 		}
 
-		if (priority && IS_POSTFIX(specifier) && is_arg_processing && last_op && !last_postfix) {
+		if (priority && IS_POSTFIX(specifier) && st.is_arg_processing && last_op && !st.last_postfix) {
 			specifier = 0;
 			priority = 0;
 		}
 
-		if (priority && IS_INFIX(specifier) && last_op && !last_postfix) {
+		if (priority && IS_INFIX(specifier) && last_op && !st.last_postfix) {
 			specifier = 0;
 			priority = 0;
 		}
@@ -5987,7 +5983,7 @@ next_token:
 			char *s = eat_space(p);
 			int nextch = s ? *s : 0;
 
-			if (prev_operator || ((nextch != ',') && (nextch != ')') && (nextch != ']') && (nextch != '|') && (nextch != '}'))) {
+			if (st.prev_operator || ((nextch != ',') && (nextch != ')') && (nextch != ']') && (nextch != '|') && (nextch != '}'))) {
 				if (!p->do_read_term)
 					fprintf(stderr, "Error: syntax error, parens needed around operator '%s', %s:%d\n", SB_cstr(p->token), get_loaded(p->m, p->m->filename), p->line_num);
 
@@ -5997,7 +5993,7 @@ next_token:
 			}
 		}
 
-		if (!is_func && last_op && (is_arg_processing && priority >= 1200) && !p->is_quoted) {
+		if (!is_func && last_op && (st.is_arg_processing && priority >= 1200) && !p->is_quoted) {
 			if (!p->do_read_term)
 				fprintf(stderr, "Error: syntax error, parens needed around operator '%s', %s:%d\n", SB_cstr(p->token), get_loaded(p->m, p->m->filename), p->line_num);
 
@@ -6018,10 +6014,10 @@ next_token:
 		if (is_func) {
 			p->is_op = false;
 			specifier = 0;
-			save_idx = p->cl->cidx;
+			st.save_idx = p->cl->cidx;
 		}
 
-		if (!p->is_op && !is_func && last_op && last_postfix && 0) {
+		if (!p->is_op && !is_func && last_op && st.last_postfix && 0) {
 			if (!p->do_read_term)
 				fprintf(stderr, "Error: syntax error, near '%s', operator expected postfix '%s', %s:%d\n", SB_cstr(p->token), p->save_line?p->save_line:"", get_loaded(p->m, p->m->filename), p->line_num);
 
@@ -6030,7 +6026,7 @@ next_token:
 			break;
 		}
 
-		if (is_consing && IS_INFIX(specifier) && (priority >= 1000)) {
+		if (st.is_consing && IS_INFIX(specifier) && (priority >= 1000)) {
 			if (!p->do_read_term)
 				fprintf(stderr, "Error: syntax error, near '%s', expected, %s:%d\n", SB_cstr(p->token), get_loaded(p->m, p->m->filename), p->line_num);
 
@@ -6049,9 +6045,9 @@ next_token:
 		}
 
 		last_op = (SB_strcmp(p->token, ")") && priority) || neg_numeral;
-		last_postfix = IS_POSTFIX(specifier);
-		last_prefix = last_op && IS_PREFIX(specifier);
-		this_operator = priority;
+		st.last_postfix = IS_POSTFIX(specifier);
+		st.last_prefix = last_op && IS_PREFIX(specifier);
+		st.this_operator = priority;
 
 		p->start_term = false;
 		cell *c = make_a_cell(p);
@@ -6126,17 +6122,8 @@ next_token:
 
 	while (p->frames_cnt > base) {
 		const tok_frame f = p->frames[--p->frames_cnt];
-		unsigned tmp_arity = closed ? arity : !p->error;
-		arg_idx = f.arg_idx;
-		save_idx = f.save_idx;
-		arity = f.arity;
-		entered = f.entered;
-		is_arg_processing = f.is_arg_processing;
-		is_consing = f.is_consing;
-		last_prefix = f.last_prefix;
-		last_postfix = f.last_postfix;
-		prev_operator = f.prev_operator;
-		this_operator = f.this_operator;
+		unsigned tmp_arity = closed ? st.arity : !p->error;
+		st = f.st;
 		is_func = last_op = last_num = last_bar = closed = false;
 		close_frame(p, &f);
 
@@ -6147,9 +6134,8 @@ next_token:
 	}
 
 	if (closed)
-		return arity;
+		return st.arity;
 
-	p->depth--;
 	return !p->error ? 1 : 0;
 }
 

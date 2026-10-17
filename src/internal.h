@@ -1219,7 +1219,7 @@ struct parser_ {
 	const char *error_type;				// NULL means syntax_error
 	size_t token_size, n_line, pos_start;
 	unsigned line_num, line_num_start;
-	unsigned depth, read_term_slots, num_vars;
+	unsigned read_term_slots, num_vars;
 	unsigned nesting_parens, nesting_braces, nesting_brackets;
 	struct tok_frame_ *frames;			// enclosing terms while tokenize() reads a nested one
 	unsigned frames_cnt, frames_max;
