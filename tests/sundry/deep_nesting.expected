@@ -1,0 +1,11 @@
+canonical list of 100000: reads back
+[]: depth 100000
+{}: depth 100000
+f(): depth 100000
+f([{}]): depth 75000
+(): reads as a
+f(g(a])): syntax error
+[f({a)}]: syntax error
+{[a}]: syntax error
+f([a|b,c]): syntax error
+then: f(x,[a|b],{c})
