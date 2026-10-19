@@ -65,19 +65,16 @@ static void collect_vars_internal(query *q, cell *p1, pl_idx p1_ctx, unsigned de
 	if (!is_compound(p1) || is_ground(p1))
 		return;
 
-	// Transform recursion into stack iteration (as in has_vars_internal):
-	//
-	// Unlike has_vars_internal() we must preserve the order in which
-	// variables are encountered, so we cannot use a plain FIFO/LIFO of
-	// pending nodes: a variable that is a direct argument would then be
-	// accumulated before the variables inside an earlier sibling that was
-	// only queued. Instead each frame walks one compound's arguments
-	// left-to-right and we descend into a child compound immediately, which
-	// reproduces the pre-order, depth-first, left-to-right walk of the
-	// recursion exactly. The (e, save_vgen) pair belongs to the parent
-	// arg-slot that caused us to descend and is restored once this subtree
-	// is fully collected - i.e. at the point the recursive call would have
-	// returned.
+	// A stack, descending at once so variables come in order of first occurrence; (e, save_vgen) is the slot that led here and its mark when done
+
+	// A shared variable's binding is walked twice at most, enough to lift the counts inside past 1
+
+	uint32_t once = 1, twice = 2;
+
+	if (q->vgen == 1)
+		once = 3;
+	else if (q->vgen == 2)
+		twice = 3;
 
 	list stack = {0};
 	vnode *n = TPL_malloc(sizeof(vnode));
@@ -92,9 +89,7 @@ static void collect_vars_internal(query *q, cell *p1, pl_idx p1_ctx, unsigned de
 
 	while ((n = (vnode*)list_back(&stack)) != NULL) {
 		if (!n->arity) {
-			// This node's arguments are all done - the point at which the
-			// recursive call would have returned. Restore the parent
-			// arg-slot's vgen mark now that its subtree is complete.
+			// Arguments done: mark the slot that led here walked once or twice
 			slot *pending_e = n->e;
 			uint32_t pending_vgen = n->save_vgen;
 
@@ -127,8 +122,12 @@ static void collect_vars_internal(query *q, cell *p1, pl_idx p1_ctx, unsigned de
 			accum_var(q, c, c_ctx);
 			if (e) set_vgen(q, e, save_vgen);
 		} else if (is_compound(c) && !is_ground(c)) {
-			// Descend iteratively instead of recursing; defer the vgen
-			// restore until this child's whole subtree is finished.
+			if (e && (save_vgen == twice)) {
+				set_vgen(q, e, twice);
+				continue;
+			}
+
+			// Descend; the slot is marked when the subtree is done
 			vnode *cn = TPL_malloc(sizeof(vnode));
 
 			if (!cn) {
@@ -143,7 +142,7 @@ static void collect_vars_internal(query *q, cell *p1, pl_idx p1_ctx, unsigned de
 			cn->p1_ctx = c_ctx;
 			cn->depth = n->depth + 1;
 			cn->e = e;
-			cn->save_vgen = save_vgen;
+			cn->save_vgen = (save_vgen == once) ? twice : once;
 			list_push_back(&stack, cn);
 		} else {
 			// atom, number, ground compound or cyclic var: nothing to collect
@@ -152,7 +151,7 @@ static void collect_vars_internal(query *q, cell *p1, pl_idx p1_ctx, unsigned de
 	}
 }
 
-// Several terms can share one table: a term's new variables start at the tab_idx before its collect_vars_add().
+// Terms can share one table, each one's new variables from the tab_idx before its collect_vars_add()
 
 void collect_vars_begin(query *q)
 {
@@ -192,8 +191,14 @@ static bool has_vars_internal(query *q, cell *p1, pl_ctx p1_ctx, unsigned depth)
 
 	// Transform recursion into stack iteration...
 
+	// Out of memory it reports variables, so ground/1 fails rather than wrongly succeeding
+
 	list stack = {0};
 	snode *n = TPL_malloc(sizeof(snode));
+
+	if (!n)
+		return true;
+
 	n->c = p1;
 	n->c_ctx = p1_ctx;
 	list_push_back(&stack, n);
@@ -236,6 +241,14 @@ static bool has_vars_internal(query *q, cell *p1, pl_ctx p1_ctx, unsigned depth)
 
 			if (!both && is_compound(c) && !is_ground(c)) {
 				n = TPL_malloc(sizeof(snode));
+
+				if (!n) {
+					while ((n = (snode*)list_pop_front(&stack)) != NULL)
+						TPL_free(n);
+
+					return true;
+				}
+
 				n->c = c;
 				n->c_ctx = c_ctx;
 				list_push_back(&stack, n);
@@ -267,7 +280,7 @@ static void cyclic_stack_abort(query *q, list *stack)
 	}
 }
 
-// A variable is marked q->vgen while its binding is walked and done after: a marked one met again is a cycle, a done one is skipped, so a shared subterm is walked once
+// A variable is marked q->vgen while its binding is walked and done after: met marked is a cycle, met done is skipped
 
 static bool is_cyclic_term_internal(query *q, cell *p1, pl_ctx p1_ctx)
 {
@@ -409,7 +422,7 @@ LOOP:
 		} else {
 			make_stringn(tmp, src, C_STRLEN(q, head) - (src-save_src));
 
-			// The remainder has to be walked the same way as the whole.
+			// The rest is walked as the whole is
 
 			if (bytes && is_string(tmp))
 				tmp->flags |= FLAG_CSTR_BYTES;

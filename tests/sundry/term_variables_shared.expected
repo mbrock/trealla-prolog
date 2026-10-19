@@ -1,0 +1,7 @@
+variables_1000(ok)
+singletons_1000([])
+variables_over_g(ok)
+singletons_over_g([])
+shared_once([])
+order_and_singletons(ok)
+shared_twice(ok)
