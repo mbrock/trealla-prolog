@@ -1140,6 +1140,17 @@ static list *reclaim_list(query *q, const rule *r)
 	return l ? l : &q->undo;
 }
 
+// splitmix64 over the pid, the time and the query id, so seeds from nearby values share no structure
+
+static unsigned seed_from(uint64_t pid, uint64_t id)
+{
+	uint64_t x = (pid << 32) ^ wall_time_in_usec() ^ (id * 0x9e3779b97f4a7c15ULL);
+	x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+	x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+	x ^= x >> 31;
+	return (unsigned)(x ^ (x >> 32));
+}
+
 static pl_atomic uint64_t g_query_id = 0;	// process-wide; taken under live_guard, so a query is live once it has one
 
 // Freed once every query alive now has ended, as any of them might hold it.
@@ -3951,9 +3962,9 @@ static query *query_create_(module *m, bool is_toplevel)
 	q->double_quotes = false;
 
 #ifndef __wasi__
-	q->rand_seed = getpid() + g_query_id;
+	q->rand_seed = seed_from(getpid(), g_query_id);
 #else
-	q->rand_seed = clock() + g_query_id;
+	q->rand_seed = seed_from(clock(), g_query_id);
 #endif
 
 	//if (is_threaded) q->trace = 1;

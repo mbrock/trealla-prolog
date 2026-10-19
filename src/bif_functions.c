@@ -2853,10 +2853,30 @@ static pl_flt rnd(query *q)
 	return (pl_flt)tpl_rand_r(&q->rand_seed) / (pl_flt)RAND_MAX;
 }
 
+// A seed goes through murmur3's finaliser, as rand_r()'s first value is nearly proportional to it; the inverse lets get_seed/1 hand back one that restores the state
+
+static unsigned seed_mix(unsigned h)
+{
+	h ^= h >> 16;
+	h *= 0x85ebca6bu;
+	h ^= h >> 13;
+	h *= 0xc2b2ae35u;
+	return h ^ (h >> 16);
+}
+
+static unsigned seed_unmix(unsigned h)
+{
+	h ^= h >> 16;
+	h *= 0x7ed1b41du;
+	h ^= (h >> 13) ^ (h >> 26);
+	h *= 0xa5cb9243u;
+	return h ^ (h >> 16);
+}
+
 static bool bif_set_seed_1(query *q)
 {
 	GET_FIRST_ARG(p1,integer);
-	q->rand_seed = (unsigned)p1->val_uint;
+	q->rand_seed = seed_mix((unsigned)p1->val_uint);
 	srand(q->rand_seed);
 	return true;
 }
@@ -2865,7 +2885,7 @@ static bool bif_get_seed_1(query *q)
 {
 	GET_FIRST_ARG(p1,var);
 	cell tmp;
-	make_uint(&tmp, q->rand_seed);
+	make_uint(&tmp, seed_unmix(q->rand_seed));
 	return unify(q, p1, p1_ctx, &tmp, q->st.cur_ctx);
 }
 

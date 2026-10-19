@@ -3,9 +3,14 @@
 	random_integer/3,
 	set_random/1]).
 
+% From the OS random source; without one, the query's own seed is kept, already well mixed
+
 set_random(seed(random)) :-
-	wall_time(Seed),
-	set_seed(Seed),
+	(   catch(crypto_n_random_bytes(4, [A,B,C,D]), _, fail)
+	->  Seed is (A << 24) \/ (B << 16) \/ (C << 8) \/ D,
+		set_seed(Seed)
+	;   true
+	),
 	!.
 set_random(seed(Seed)) :-
 	set_seed(Seed).
