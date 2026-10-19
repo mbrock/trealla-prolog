@@ -55,7 +55,7 @@ erase_then_reconsult :-
 reconsult_running :-
 	tmp_file('abolish_in_use_tmp2.pl', File),
 	setup_call_cleanup(open(File, write, S),
-		format(S, "rc :- consult('~w'), atom_length(abcdef, L), X = g(L, h([1,2])), write(X), nl.~n", [File]), close(S)),
+		format(S, "rc :- consult(~q), atom_length(abcdef, L), X = g(L, h([1,2])), write(X), nl.~n", [File]), close(S)),
 	consult(File), rc,
 	delete_file(File).
 
