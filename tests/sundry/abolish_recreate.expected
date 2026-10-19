@@ -1,0 +1,13 @@
+c(1)
+before-[discontiguous,dynamic]
+c(2)
+reasserted-[dynamic]
+c(3)
+c(4)
+consulted-[static]
+permission_error
+[a,b]
+cw(new)
+cw(again)
+cw(third)
+[last]

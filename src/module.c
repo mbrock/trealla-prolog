@@ -406,6 +406,63 @@ predicate *thread_local_shadow(predicate *pr)
 static predicate *revive_buried(module *m, const cell *c);
 static void free_buried(module *m);
 
+// An abolished header for c made like new once nothing reads or waits in it, so lookups don't walk past one per abolish; last_modified and db_id carry on.
+
+static predicate *revive_abolished(module *m, const cell *c)
+{
+	cell tmp = *c;
+	tmp.tag = TAG_INTERNED;
+	tmp.flags = 0;
+	tmp.num_cells = 1;
+	tmp.match = NULL;
+	set_arity(&tmp, get_arity(c));
+	sliter *iter = sl_find_key(m->index, &tmp);
+	predicate *pr = NULL;
+
+	while (sl_next_key(iter, (void*)&pr)) {
+		if (pr && pr->is_abolished && !pr->refcnt && !pr->head
+			&& !list_count(&pr->dirty) && !list_count(&pr->delinked))
+			break;
+
+		pr = NULL;
+	}
+
+	sl_done(iter);
+
+	if (!pr)
+		return NULL;
+
+	index_free(pr);
+
+	if (pr->meta_args) {
+		unshare_cells(pr->meta_args, pr->meta_args->num_cells);
+		TPL_free(pr->meta_args);
+	}
+
+	const bool is_revived = pr->is_revived;
+	pr->alias = NULL;
+	pr->meta_args = NULL;
+	pr->cnt = 0;
+	pr->max_vars = pr->idx2_arg = pr->idx3_want = 0;
+	pr->sig_args[0] = pr->sig_args[1] = pr->sig_args[2] = 0;
+	pr->drain_gen = 0;
+	pr->drain_old = 0;
+	pr->is_reload = pr->is_builtin = pr->is_public = pr->is_dynamic = pr->is_thread_local = false;
+	pr->is_meta_predicate = pr->is_multifile = pr->is_discontiguous = false;
+	pr->needs_index = pr->no_idx3 = pr->is_check_directive = pr->is_processed = false;
+	pr->is_var_in_head = pr->is_var_in_first_arg = pr->is_open_first_arg = pr->is_var_in_idx2_arg = false;
+	pr->is_iso = pr->is_dirty = pr->is_incremental = pr->sig_chosen = pr->sig_custom = false;
+	pr->is_revived = is_revived;
+	pr->filename = m->filename;
+	pr->is_noindex = m->pl->noindex || !get_arity(&pr->key);
+	list_remove(&m->predicates, pr);
+	list_push_back(&m->predicates, pr);		// where a new one would go
+	pl_publish_barrier();
+	pr->is_abolished = false;
+	m->pl->pred_gen++;
+	return pr;
+}
+
 predicate *create_predicate(module *m, cell *c, bool *created)
 {
 	if (created) *created = false;
@@ -424,7 +481,16 @@ predicate *create_predicate(module *m, cell *c, bool *created)
 		return NULL;
 	}
 
-	predicate *pr = is_interned(c) ? revive_buried(m, c) : NULL;
+	predicate *pr = revive_abolished(m, c);
+
+	if (pr) {
+		if (created)
+			*created = true;
+
+		return pr;
+	}
+
+	pr = is_interned(c) ? revive_buried(m, c) : NULL;
 
 	if (!pr && !(pr = TPL_calloc(1, sizeof(predicate))))
 		return NULL;
