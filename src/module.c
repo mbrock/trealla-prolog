@@ -451,7 +451,7 @@ static predicate *revive_abolished(module *m, const cell *c)
 	pr->is_meta_predicate = pr->is_multifile = pr->is_discontiguous = false;
 	pr->needs_index = pr->no_idx3 = pr->is_check_directive = pr->is_processed = false;
 	pr->is_var_in_head = pr->is_var_in_first_arg = pr->is_open_first_arg = pr->is_var_in_idx2_arg = false;
-	pr->is_iso = pr->is_dirty = pr->is_incremental = pr->sig_chosen = pr->sig_custom = false;
+	pr->is_iso = pr->is_dirty = pr->is_incremental = pr->sig_chosen = pr->sig_custom = pr->is_static_noted = false;
 	pr->is_revived = is_revived;
 	pr->filename = m->filename;
 	pr->is_noindex = m->pl->noindex || !get_arity(&pr->key);
@@ -551,6 +551,8 @@ void detach_clauses(predicate *pr)
 		TPL_free(pr->meta_args);
 		pr->meta_args = NULL;
 	}
+
+	pr->is_meta_predicate = false;			// so a reload can declare it again
 
 	// Only now the index has gone, as it borrows keys from the clauses' cells.
 
@@ -1172,48 +1174,26 @@ void index_remove_clause(predicate *pr, rule *r)
 		sl_rem(pr->idx3, c, r);
 }
 
-static void purge_properties(predicate *pr)
+// For a reconsult: pr's recorded properties go, and those its declarations still imply come back
+// (the declarations outlive it, as in Scryer); static is noted again with its next clause.
+
+static void purge_properties(predicate *pr, bool keep)
 {
-	cell tmp;
-	make_atom(&tmp, new_atom(pr->m->pl, "$predicate_property"));
-	set_arity(&tmp, 3);
-	predicate *pr2 = find_predicate(pr->m, &tmp);
-	if (!pr2) return;
+	module *m = pr->m;
+	char name[1024];
+	snprintf(name, sizeof(name), "%s", C_STR(m, &pr->key));	// push_property() can move the atom table
+	const unsigned arity = get_arity(&pr->key);
+	clear_property(m, name, arity);
+	pr->is_static_noted = false;
 
-	// Pass 1: mark, and withdraw index entries while the whole chain is
-	// still live.
-
-	for (rule *r = pr2->head; r; r = r->next) {
-		cell *f = r->cl.cells;
-		cell *p1 = f + 1;
-		cell *p2 = p1 + p1->num_cells;
-
-		if ((get_arity(&pr->key) != get_arity(p2)) || (pr->key.val_off != p2->val_off))
-			continue;
-
-		r->dbgen_retracted = ++pr->m->pl->dbgen;
-		pr2->last_modified = r->dbgen_retracted;	// incremental tabling (item 3)
-		pr2->cnt--;
-		index_remove_clause(pr2, r);
-	}
-
-	if (pr2->refcnt)
+	if (!keep)
 		return;
 
-	for (rule *r = pr2->head; r; ) {
-		cell *f = r->cl.cells;
-		cell *p1 = f + 1;
-		cell *p2 = p1 + p1->num_cells;
-		rule *save = r;
-		r = r->next;
-
-		if ((get_arity(&pr->key) != get_arity(p2)) || (pr->key.val_off != p2->val_off))
-			continue;
-
-		predicate_delink(pr2, save);
-		clear_clause(&save->cl);
-		TPL_free(save);
-	}
+	if (pr->is_dynamic) push_property(m, name, arity, "dynamic");
+	if (pr->is_thread_local) push_property(m, name, arity, "thread_local");
+	if (pr->is_discontiguous) push_property(m, name, arity, "discontiguous");
+	if (pr->is_multifile) push_property(m, name, arity, "multifile");
+	if (pr->is_public) push_property(m, name, arity, "public");
 }
 
 // $predicate_property holds a clause per property per predicate, so asking it whether a
@@ -1267,7 +1247,7 @@ void push_property(module *m, const char *name, unsigned arity, const char *type
 	note_property(m, name, arity);
 }
 
-static bool property_matches(module *m, const rule *r, const char *name, unsigned arity)
+static bool property_matches(module *m, const rule *r, pl_idx name_off, const char *name, unsigned arity)
 {
 	const cell *key = r->cl.cells + 1;		// Name/Arity, see format_property()
 
@@ -1280,7 +1260,7 @@ static bool property_matches(module *m, const rule *r, const char *name, unsigne
 	if (!is_smallint(a) || ((unsigned)get_smallint(a) != arity))
 		return false;
 
-	return !strcmp(C_STR(m, n), name);
+	return is_interned(n) ? (n->val_off == name_off) : !strcmp(C_STR(m, n), name);
 }
 
 void clear_property(module *m, const char *name, unsigned arity)
@@ -1293,10 +1273,13 @@ void clear_property(module *m, const char *name, unsigned arity)
 	set_arity(&tmp, 3);
 	predicate *pr = find_predicate(m, &tmp);
 	if (!pr) return;
+	const pl_idx name_off = new_atom(m->pl, name);	// a compare per clause, not a strcmp
+
+	// One already retracted is on dirty, for the last reader out to reclaim.
 
 	if (pr->idx1 && !pr->refcnt) {
 		for (rule *r = pr->head; r; r = r->next) {
-			if (property_matches(m, r, name, arity))
+			if (!r->dbgen_retracted && property_matches(m, r, name_off, name, arity))
 				index_remove_clause(pr, r);
 		}
 	}
@@ -1304,7 +1287,7 @@ void clear_property(module *m, const char *name, unsigned arity)
 	bool removed = false;
 
 	for (rule *r = pr->head; r;) {
-		if (!property_matches(m, r, name, arity)) {
+		if (r->dbgen_retracted || !property_matches(m, r, name_off, name, arity)) {
 			r = r->next;
 			continue;
 		}
@@ -1318,6 +1301,7 @@ void clear_property(module *m, const char *name, unsigned arity)
 			predicate_delink(pr, save);
 			clear_clause(&save->cl);
 			TPL_free(save);
+			pr->cnt--;
 			removed = true;
 		}
 	}
@@ -2312,27 +2296,10 @@ static bool check_not_multifile(module *m, predicate *pr, rule *r)
 			if (pr->head->filename)
 				fprintf(stderr, "Warning: overwriting '%s'/%u\n", C_STR(m, &pr->key), get_arity(&pr->key));
 
-			while (pr->head) {
-				rule *tmp = pr->head;
-				pr->head = pr->head->next;
-				clear_clause(&tmp->cl);
-				TPL_free(tmp);
-			}
-
-			pr->head = pr->tail = NULL;
+			detach_clauses(pr);			// code from the old file may still be running
 			pr->is_processed = false;
 			pr->is_reload = false;
-			pr->meta_args = NULL;
 			pr->alias = NULL;
-			pr->cnt = 0;
-			index_free(pr);
-			pr->needs_index = false;
-			pr->is_var_in_head = false;
-			pr->is_var_in_first_arg = false;
-			pr->is_open_first_arg = false;
-	pr->is_open_first_arg = false;
-			pr->is_var_in_idx2_arg = false;
-			pr->idx2_arg = 0;
 			TPL_free(r);
 			return false;
 		}
@@ -2726,6 +2693,7 @@ static rule *assert_begin(module *m, unsigned num_vars, cell *p1, bool consultin
 					push_property(m, C_STR(m, c), get_arity(c), "built_in");
 
 				push_property(m, C_STR(m, c), get_arity(c), "static");
+				pr->is_static_noted = true;
 			}
 
 			if (consulting && m->make_public) {
@@ -2737,6 +2705,15 @@ static rule *assert_begin(module *m, unsigned num_vars, cell *p1, bool consultin
 
 	if (is_dirty)
 		pr->is_dirty = true;
+
+	// Declared before its first clause, or kept through a reconsult, it was never noted static.
+
+	if (consulting && !pr->is_dynamic && !pr->is_static_noted && (C_STR(m, &pr->key)[0] != '$')) {
+		pr->is_static_noted = true;			// first: push_property() consults a clause too
+		char name[1024];
+		snprintf(name, sizeof(name), "%s", C_STR(m, &pr->key));
+		push_property(m, name, get_arity(&pr->key), "static");
+	}
 
 	if (m->prebuilt)
 		pr->is_builtin = true;
@@ -3313,18 +3290,20 @@ static bool unload_realfile(module *m, const char *filename)
 			continue;
 		}
 
-		purge_properties(pr);
-
 		// A query still inside it keeps its clauses until the last such query leaves.
 
 		if (pr->refcnt) {
+			purge_properties(pr, false);
+
 			for (rule *r = pr->head; r; r = r->next)
 				retract_from_db(m, r);
 
 			pr->is_abolished = true;
 			m->pl->pred_gen++;
-		} else
+		} else {
 			detach_clauses(pr);
+			purge_properties(pr, true);
+		}
 
 		pr = list_next(pr);
 	}

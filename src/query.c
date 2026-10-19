@@ -3398,7 +3398,7 @@ static bool any_outstanding_choices(query *q)
 		if (!ch->barrier)
 			break;
 
-		pop_choice(q);
+		drop_choice(q);			// its undo items go outwards, as a cut's would
 	}
 
 	return q->st.cp > 0;

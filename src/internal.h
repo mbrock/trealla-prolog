@@ -537,6 +537,7 @@ struct predicate_ {
 	bool is_incremental:1;
 	bool sig_chosen:1;					// choose_sig_args() has run, so sig_args no longer changes
 	bool sig_custom:1;
+	bool is_static_noted:1;				// its static property is recorded
 	uint64_t last_modified;
 };
 
