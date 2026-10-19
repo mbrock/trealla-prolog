@@ -1364,16 +1364,16 @@ static bool is_declaration_name(const char *name)
 
 static bool is_declaration(parser *p, cell *c)
 {
-	if (!is_interned(c))
-		return false;
-
-	if ((c->val_off == g_conjunction_s) && (get_arity(c) == 2)) {
+	while (is_interned(c) && (c->val_off == g_conjunction_s) && (get_arity(c) == 2)) {
 		cell *lhs = c + 1;
-		cell *rhs = lhs + lhs->num_cells;
-		return is_declaration(p, lhs) && is_declaration(p, rhs);
+
+		if (!is_declaration(p, lhs))
+			return false;
+
+		c = lhs + lhs->num_cells;
 	}
 
-	return is_declaration_name(C_STR(p, c));
+	return is_interned(c) && is_declaration_name(C_STR(p, c));
 }
 
 // Does this directive (or any conjunct of it) declare an
@@ -1382,16 +1382,16 @@ static bool is_declaration(parser *p, cell *c)
 
 static bool has_initialization(parser *p, cell *c)
 {
-	if (!is_interned(c))
-		return false;
-
-	if ((c->val_off == g_conjunction_s) && (get_arity(c) == 2)) {
+	while (is_interned(c) && (c->val_off == g_conjunction_s) && (get_arity(c) == 2)) {
 		cell *lhs = c + 1;
-		cell *rhs = lhs + lhs->num_cells;
-		return has_initialization(p, lhs) || has_initialization(p, rhs);
+
+		if (has_initialization(p, lhs))
+			return true;
+
+		c = lhs + lhs->num_cells;
 	}
 
-	return !strcmp(C_STR(p, c), "initialization") && (get_arity(c) == 1);
+	return is_interned(c) && !strcmp(C_STR(p, c), "initialization") && (get_arity(c) == 1);
 }
 
 static bool directive_term(parser *p, cell *c);
@@ -1448,15 +1448,20 @@ static bool directive_term(parser *p, cell *c)
 	module *m = p->m;
 	const char *dirname = C_STR(p, c);
 
+	// Every conjunct is then a declaration, so the chain is walked in a loop, checked once
+
 	if ((c->val_off == g_conjunction_s) && (get_arity(c) == 2)
 		&& is_declaration(p, c) && !has_initialization(p, c)) {
-		cell *lhs = c + 1;
-		cell *rhs = lhs + lhs->num_cells;
+		while ((c->val_off == g_conjunction_s) && (get_arity(c) == 2)) {
+			cell *lhs = c + 1;
 
-		if (!directive_term(p, lhs) || p->error)
-			return false;
+			if (!directive_term(p, lhs) || p->error)
+				return false;
 
-		return directive_term(p, rhs);
+			c = lhs + lhs->num_cells;
+		}
+
+		return directive_term(p, c);
 	}
 
 	// run_init lives on the module, and a load whose file has no module
@@ -2200,53 +2205,46 @@ static bool directive_term(parser *p, cell *c)
 
 static bool starts_with_cut(const cell *c)
 {
-	if (!is_interned(c))
-		return false;
+	while (is_interned(c) && (get_arity(c) == 2) && (c->val_off == g_conjunction_s))
+		c = c + 1;
 
-	if (c->val_off == g_cut_s)
-		return true;
-
-	if ((get_arity(c) == 2) && (c->val_off == g_conjunction_s))
-		return starts_with_cut(c + 1);
-
-	return false;
+	return is_interned(c) && (c->val_off == g_cut_s);
 }
 
 static void mark_next_cut(cell *c)
 {
-	if (!is_interned(c) || !get_arity(c))
-		return;
+	// Each construct's last argument is looped rather than recursed, so a long conjunction can't exhaust the C stack
 
-	cell *arg1 = c + 1;
-	cell *arg2 = arg1 + arg1->num_cells;
+	for (;;) {
+		if (!is_interned(c) || !get_arity(c))
+			return;
 
-	if ((c->val_off == g_conjunction_s) && (get_arity(c) == 2)) {
-		if (starts_with_cut(arg2))
-			arg1->flags |= FLAG_INTERNED_NEXT_CUT;
+		cell *arg1 = c + 1;
+		cell *arg2 = arg1 + arg1->num_cells;
 
-		mark_next_cut(arg1);
-		mark_next_cut(arg2);
-		return;
-	}
+		if ((c->val_off == g_conjunction_s) && (get_arity(c) == 2)) {
+			if (starts_with_cut(arg2))
+				arg1->flags |= FLAG_INTERNED_NEXT_CUT;
 
-	if ((c->val_off == g_disjunction_s) && (get_arity(c) == 2)) {
-		mark_next_cut(arg1);
-		mark_next_cut(arg2);
-		return;
-	}
+			mark_next_cut(arg1);
+			c = arg2;
+			continue;
+		}
 
-	if (((c->val_off == g_if_then_s) || (c->val_off == g_soft_cut_s))
-		&& (get_arity(c) == 2)) {
-		mark_next_cut(arg1);
-		mark_next_cut(arg2);
-		return;
-	}
+		if (((c->val_off == g_disjunction_s) || (c->val_off == g_if_then_s) || (c->val_off == g_soft_cut_s))
+			&& (get_arity(c) == 2)) {
+			mark_next_cut(arg1);
+			c = arg2;
+			continue;
+		}
 
-	if ((c->val_off == g_if_s) && (get_arity(c) == 3)) {
-		cell *arg3 = arg2 + arg2->num_cells;
-		mark_next_cut(arg1);
-		mark_next_cut(arg2);
-		mark_next_cut(arg3);
+		if ((c->val_off == g_if_s) && (get_arity(c) == 3)) {
+			mark_next_cut(arg1);
+			mark_next_cut(arg2);
+			c = arg2 + arg2->num_cells;
+			continue;
+		}
+
 		return;
 	}
 }
@@ -3597,6 +3595,12 @@ static cell *term_to_body_conversion(parser *p, cell *c)
 {
 	//printf("*** term_to_body_conversion %s/%u, p->is_command=%d\n", C_STR(p, c), get_arity(c), p->is_command);
 
+	// The right-hand chain of control constructs is walked in a loop, so a long conjunction can't exhaust the C stack
+
+	pl_idx top_idx = c - p->cl->cells;
+	unsigned chain = 0;
+
+next:;
 	pl_idx c_idx = c - p->cl->cells;
 	bool is_head = c_idx == 0;
 
@@ -3640,18 +3644,9 @@ static cell *term_to_body_conversion(parser *p, cell *c)
 				lhs = p->cl->cells + lhs_idx;
 				rhs = p->cl->cells + rhs_idx;
 			} else {
-				pl_idx lhs_idx = lhs - p->cl->cells;
-				set_arity(rhs, get_arity(rhs) + extra);
-				rhs = goal_expansion(p, rhs);
-				rhs = term_to_body_conversion(p, rhs);
-				set_arity(rhs, get_arity(rhs) - extra);
-
-				// Both calls above can grow, and hence move, the
-				// clause. Re-derive the pointers into it; rhs is
-				// already the freshly returned one...
-
-				lhs = p->cl->cells + lhs_idx;
-				c = p->cl->cells + c_idx;
+				c = goal_expansion(p, rhs);
+				chain++;
+				goto next;
 			}
 
 			c->num_cells = 1 + lhs->num_cells + rhs->num_cells;
@@ -3755,6 +3750,22 @@ static cell *term_to_body_conversion(parser *p, cell *c)
 	}
 
 	c_idx = c - p->cl->cells;
+
+	// Everything on the chain ends where its last right-hand side does
+
+	if (chain) {
+		pl_idx end = c_idx + c->num_cells;
+		c = p->cl->cells + top_idx;
+
+		while (chain--) {
+			c->num_cells = end - (c - p->cl->cells);
+			cell *lhs = c + 1;
+			c = lhs + lhs->num_cells;
+		}
+
+		return p->cl->cells + top_idx;
+	}
+
 	return p->cl->cells + c_idx;
 }
 

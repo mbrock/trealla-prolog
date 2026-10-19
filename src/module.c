@@ -2392,39 +2392,44 @@ static void mark_tail_call(cell *c)
 
 static void mark_tail_positions(cell *body)
 {
-	if (!is_interned(body) || !get_arity(body)) {
+	// Each construct's last tail is looped rather than recursed, so a long conjunction can't exhaust the C stack
+
+	for (;;) {
+		if (!is_interned(body) || !get_arity(body)) {
+			mark_tail_call(body);
+			return;
+		}
+
+		cell *arg1 = body + 1;
+		cell *arg2 = arg1 + arg1->num_cells;
+
+		if ((body->val_off == g_conjunction_s) && (get_arity(body) == 2)) {
+			body = arg2;							// (_ , Tail)
+			continue;
+		}
+
+		if ((body->val_off == g_disjunction_s) && (get_arity(body) == 2)) {
+			mark_tail_positions(arg1);				// (Tail ; _)
+			body = arg2;							// (_ ; Tail)
+			continue;
+		}
+
+		if (((body->val_off == g_if_then_s) || (body->val_off == g_soft_cut_s))
+			&& (get_arity(body) == 2)) {
+			body = arg2;							// (_ -> Tail)
+			continue;
+		}
+
+		if ((body->val_off == g_if_s) && (get_arity(body) == 3)) {
+			cell *arg3 = arg2 + arg2->num_cells;
+			mark_tail_positions(arg2);				// if(_, Tail, _)
+			body = arg3;							// if(_, _, Tail)
+			continue;
+		}
+
 		mark_tail_call(body);
 		return;
 	}
-
-	cell *arg1 = body + 1;
-	cell *arg2 = arg1 + arg1->num_cells;
-
-	if ((body->val_off == g_conjunction_s) && (get_arity(body) == 2)) {
-		mark_tail_positions(arg2);				// (_ , Tail)
-		return;
-	}
-
-	if ((body->val_off == g_disjunction_s) && (get_arity(body) == 2)) {
-		mark_tail_positions(arg1);				// (Tail ; _)
-		mark_tail_positions(arg2);				// (_ ; Tail)
-		return;
-	}
-
-	if (((body->val_off == g_if_then_s) || (body->val_off == g_soft_cut_s))
-		&& (get_arity(body) == 2)) {
-		mark_tail_positions(arg2);				// (_ -> Tail)
-		return;
-	}
-
-	if ((body->val_off == g_if_s) && (get_arity(body) == 3)) {
-		cell *arg3 = arg2 + arg2->num_cells;
-		mark_tail_positions(arg2);				// if(_, Tail, _)
-		mark_tail_positions(arg3);				// if(_, _, Tail)
-		return;
-	}
-
-	mark_tail_call(body);
 }
 
 void process_clause(module *m, clause *cl)

@@ -67,21 +67,18 @@ static bool is_lists_member(const predicate *pr)
 
 static bool body_needs_call_check(const cell *c)
 {
-	if (is_var(c))
-		return true;
-
-	if (!is_interned(c))
-		return true;
-
-	if ((get_arity(c) == 2)
+	while (is_interned(c) && (get_arity(c) == 2)
 		&& ((c->val_off == g_conjunction_s) || (c->val_off == g_disjunction_s)
 			|| (c->val_off == g_if_then_s) || (c->val_off == g_soft_cut_s))) {
 		const cell *lhs = c + 1;
-		const cell *rhs = lhs + lhs->num_cells;
-		return body_needs_call_check(lhs) || body_needs_call_check(rhs);
+
+		if (body_needs_call_check(lhs))
+			return true;
+
+		c = lhs + lhs->num_cells;
 	}
 
-	return false;
+	return is_var(c) || !is_interned(c);
 }
 
 // A var, call(Var) or non-callable: a goal only known at run time.
@@ -116,98 +113,178 @@ static void compile_catch_goal(predicate *pr, clause *cl, cell **dst, cell **src
 	compile_term(pr, cl, dst, src);
 }
 
+// What a branching construct still has to emit once its last branch is compiled
+
+typedef struct {
+	cell *save_dst1, *save_dst2;
+} open_branch;
+
+static bool push_open_branch(open_branch **open, unsigned *cnt, unsigned *max, cell *save_dst1, cell *save_dst2)
+{
+	if (*cnt == *max) {
+		unsigned n = *max ? *max * 2 : 16;
+		open_branch *tmp = TPL_realloc(*open, sizeof(open_branch) * n);
+
+		if (!tmp)
+			return false;
+
+		*open = tmp;
+		*max = n;
+	}
+
+	(*open)[(*cnt)++] = (open_branch){save_dst1, save_dst2};
+	return true;
+}
+
+static void close_branch(cell **dst, cell *save_dst1, cell *save_dst2)
+{
+	make_uint(save_dst2+1, *dst - save_dst2);					// Real value2
+	make_instr((*dst)++, g_true_s, bif_iso_true_0, 0, 0);		// Landing
+	set_block_length(save_dst1, *dst);
+}
+
+static void compile_goal(predicate *pr, clause *cl, cell **dst, cell **src);
+
+// Chains of ',' and of ';', if-then-else and if/3 are looped down their last argument, so a long one can't exhaust the C stack
+
 static void compile_term(predicate *pr, clause *cl, cell **dst, cell **src)
 {
+	open_branch *open = NULL;
+	unsigned open_cnt = 0, open_max = 0;
+
+	for (;;) {
+		// T1 , T2
+
+		while (((*src)->val_off == g_conjunction_s) && (get_arity((*src)) == 2)) {
+			*src += 1;
+			compile_term(pr, cl, dst, src);							// LHS
+		}
+
+		cell *c = (*src) + 1;
+
+		// T1 -> T2 ; T3
+
+		if (((*src)->val_off == g_disjunction_s) && (get_arity((*src)) == 2)
+			&& c->bif_ptr && (get_arity(c) == 2)
+			&& (c->bif_ptr->fn == bif_iso_if_then_2)) {
+			cell *src0 = *src;
+			*src += 2;
+			unsigned var_num = cl->num_vars++;
+			cell *save_dst1 = *dst;
+			make_instr((*dst)++, g_sys_succeed_on_retry_s, bif_sys_succeed_on_retry_2, 4, 4);
+			make_var((*dst)++, g_anon_s, var_num);
+			make_uint((*dst)++, 0);										// Dummy value1
+			make_block_info(dst, src0);
+			compile_term(pr, cl, dst, src);								// Arg1
+			make_instr((*dst)++, g_cut_s, bif_iso_cut_0, 0, 0);
+			make_instr((*dst)++, g_sys_drop_barrier_s, bif_sys_drop_barrier_1, 1, 1);
+			make_var((*dst)++, g_anon_s, var_num);
+			compile_term(pr, cl, dst, src);								// Arg2
+			cell *save_dst2 = *dst;
+			make_instr((*dst)++, g_sys_jump_s, bif_sys_jump_1, 1, 1);
+			make_uint((*dst)++, 0);										// Dummy value2
+			make_uint(save_dst1+2, *dst - save_dst1);					// Real value1
+			if (push_open_branch(&open, &open_cnt, &open_max, save_dst1, save_dst2))
+				continue;
+
+			compile_term(pr, cl, dst, src);								// Arg3, recursed when it can't be stacked
+			close_branch(dst, save_dst1, save_dst2);
+			break;
+		}
+
+		// T1 *-> T2 ; T3
+
+		if (((*src)->val_off == g_disjunction_s) && (get_arity((*src)) == 2)
+			&& c->bif_ptr && (get_arity(c) == 2)
+			&& (c->bif_ptr->fn == bif_soft_if_then_2)) {
+			cell *src0 = *src;
+			*src += 2;
+			unsigned var_num = cl->num_vars++;
+			cell *save_dst1 = *dst;
+			make_instr((*dst)++, g_sys_succeed_on_retry_s, bif_sys_succeed_on_retry_2, 4, 4);
+			make_var((*dst)++, g_anon_s, var_num);
+			make_uint((*dst)++, 0);										// Dummy value1
+			make_block_info(dst, src0);
+			compile_term(pr, cl, dst, src);								// Arg1
+			make_instr((*dst)++, g_sys_cut_s, bif_sys_cut_1, 1, 1);
+			make_var((*dst)++, g_anon_s, var_num);
+			make_instr((*dst)++, g_sys_drop_barrier_s, bif_sys_drop_barrier_1, 1, 1);
+			make_var((*dst)++, g_anon_s, var_num);
+			compile_term(pr, cl, dst, src);								// Arg2
+			cell *save_dst2 = *dst;
+			make_instr((*dst)++, g_sys_jump_s, bif_sys_jump_1, 1, 1);
+			make_uint((*dst)++, 0);										// Dummy value2
+			make_uint(save_dst1+2, *dst - save_dst1);					// Real value1
+			if (push_open_branch(&open, &open_cnt, &open_max, save_dst1, save_dst2))
+				continue;
+
+			compile_term(pr, cl, dst, src);								// Arg3, recursed when it can't be stacked
+			close_branch(dst, save_dst1, save_dst2);
+			break;
+		}
+
+		// T1 ; T2
+
+		if (((*src)->val_off == g_disjunction_s) && (get_arity((*src)) == 2)) {
+			cell *src0 = *src;
+			*src += 1;
+			cell *save_dst1 = *dst;
+			make_instr((*dst)++, g_sys_succeed_on_retry_s, bif_sys_succeed_on_retry_1, 3, 3);
+			make_uint((*dst)++, 0);										// Dummy value1
+			make_block_info(dst, src0);
+			compile_term(pr, cl, dst, src);								// LHS
+			cell *save_dst2 = *dst;
+			make_instr((*dst)++, g_sys_jump_s, bif_sys_jump_1, 1, 1);
+			make_uint((*dst)++, 0);										// Dummy value1
+			make_uint(save_dst1+1, *dst - save_dst1);					// Real value1
+			if (push_open_branch(&open, &open_cnt, &open_max, save_dst1, save_dst2))
+				continue;
+
+			compile_term(pr, cl, dst, src);								// RHS, recursed when it can't be stacked
+			close_branch(dst, save_dst1, save_dst2);
+			break;
+		}
+
+		if (((*src)->val_off == g_if_s) && (get_arity((*src)) == 3)) {
+			cell *src0 = *src;
+			*src += 1;
+			unsigned var_num = cl->num_vars++;
+			cell *save_dst1 = *dst;
+			make_instr((*dst)++, g_sys_succeed_on_retry_s, bif_sys_succeed_on_retry_2, 4, 4);
+			make_var((*dst)++, g_anon_s, var_num);
+			make_uint((*dst)++, 0);										// Dummy value1
+			make_block_info(dst, src0);
+			compile_term(pr, cl, dst, src);								// Arg1
+			make_instr((*dst)++, g_sys_cut_s, bif_sys_cut_1, 1, 1);
+			make_var((*dst)++, g_anon_s, var_num);
+			make_instr((*dst)++, g_sys_drop_barrier_s, bif_sys_drop_barrier_1, 1, 1);
+			make_var((*dst)++, g_anon_s, var_num);
+			compile_term(pr, cl, dst, src);								// Arg2
+			cell *save_dst2 = *dst;
+			make_instr((*dst)++, g_sys_jump_s, bif_sys_jump_1, 1, 1);
+			make_uint((*dst)++, 0);										// Dummy value2
+			make_uint(save_dst1+2, *dst - save_dst1);					// Real value1
+			if (push_open_branch(&open, &open_cnt, &open_max, save_dst1, save_dst2))
+				continue;
+
+			compile_term(pr, cl, dst, src);								// Arg3, recursed when it can't be stacked
+			close_branch(dst, save_dst1, save_dst2);
+			break;
+		}
+
+		compile_goal(pr, cl, dst, src);
+		break;
+	}
+
+	while (open_cnt--)
+		close_branch(dst, open[open_cnt].save_dst1, open[open_cnt].save_dst2);
+
+	TPL_free(open);
+}
+
+static void compile_goal(predicate *pr, clause *cl, cell **dst, cell **src)
+{
 	cell *c = (*src) + 1;
-
-	// T1 , T2
-
-	if (((*src)->val_off == g_conjunction_s) && (get_arity((*src)) == 2)) {
-		*src += 1;
-		compile_term(pr, cl, dst, src);								// LHS
-		compile_term(pr, cl, dst, src);								// RHS
-		return;
-	}
-
-	// T1 -> T2 ; T3
-
-	if (((*src)->val_off == g_disjunction_s) && (get_arity((*src)) == 2)
-		&& c->bif_ptr && (get_arity(c) == 2)
-		&& (c->bif_ptr->fn == bif_iso_if_then_2)) {
-		cell *src0 = *src;
-		*src += 2;
-		unsigned var_num = cl->num_vars++;
-		cell *save_dst1 = *dst;
-		make_instr((*dst)++, g_sys_succeed_on_retry_s, bif_sys_succeed_on_retry_2, 4, 4);
-		make_var((*dst)++, g_anon_s, var_num);
-		make_uint((*dst)++, 0);										// Dummy value1
-		make_block_info(dst, src0);
-		compile_term(pr, cl, dst, src);								// Arg1
-		make_instr((*dst)++, g_cut_s, bif_iso_cut_0, 0, 0);
-		make_instr((*dst)++, g_sys_drop_barrier_s, bif_sys_drop_barrier_1, 1, 1);
-		make_var((*dst)++, g_anon_s, var_num);
-		compile_term(pr, cl, dst, src);								// Arg2
-		cell *save_dst2 = *dst;
-		make_instr((*dst)++, g_sys_jump_s, bif_sys_jump_1, 1, 1);
-		make_uint((*dst)++, 0);										// Dummy value2
-		make_uint(save_dst1+2, *dst - save_dst1);					// Real value1
-		compile_term(pr, cl, dst, src);								// Arg3
-		make_uint(save_dst2+1, *dst - save_dst2);					// Real value2
-		make_instr((*dst)++, g_true_s, bif_iso_true_0, 0, 0);		// Landing
-		set_block_length(save_dst1, *dst);
-		return;
-	}
-
-	// T1 *-> T2 ; T3
-
-	if (((*src)->val_off == g_disjunction_s) && (get_arity((*src)) == 2)
-		&& c->bif_ptr && (get_arity(c) == 2)
-		&& (c->bif_ptr->fn == bif_soft_if_then_2)) {
-		cell *src0 = *src;
-		*src += 2;
-		unsigned var_num = cl->num_vars++;
-		cell *save_dst1 = *dst;
-		make_instr((*dst)++, g_sys_succeed_on_retry_s, bif_sys_succeed_on_retry_2, 4, 4);
-		make_var((*dst)++, g_anon_s, var_num);
-		make_uint((*dst)++, 0);										// Dummy value1
-		make_block_info(dst, src0);
-		compile_term(pr, cl, dst, src);								// Arg1
-		make_instr((*dst)++, g_sys_cut_s, bif_sys_cut_1, 1, 1);
-		make_var((*dst)++, g_anon_s, var_num);
-		make_instr((*dst)++, g_sys_drop_barrier_s, bif_sys_drop_barrier_1, 1, 1);
-		make_var((*dst)++, g_anon_s, var_num);
-		compile_term(pr, cl, dst, src);								// Arg2
-		cell *save_dst2 = *dst;
-		make_instr((*dst)++, g_sys_jump_s, bif_sys_jump_1, 1, 1);
-		make_uint((*dst)++, 0);										// Dummy value2
-		make_uint(save_dst1+2, *dst - save_dst1);					// Real value1
-		compile_term(pr, cl, dst, src);								// Arg3
-		make_uint(save_dst2+1, *dst - save_dst2);					// Real value2
-		make_instr((*dst)++, g_true_s, bif_iso_true_0, 0, 0);		// Landing
-		set_block_length(save_dst1, *dst);
-		return;
-	}
-
-	// T1 ; T2
-
-	if (((*src)->val_off == g_disjunction_s) && (get_arity((*src)) == 2)) {
-		cell *src0 = *src;
-		*src += 1;
-		cell *save_dst1 = *dst;
-		make_instr((*dst)++, g_sys_succeed_on_retry_s, bif_sys_succeed_on_retry_1, 3, 3);
-		make_uint((*dst)++, 0);										// Dummy value1
-		make_block_info(dst, src0);
-		compile_term(pr, cl, dst, src);								// LHS
-		cell *save_dst2 = *dst;
-		make_instr((*dst)++, g_sys_jump_s, bif_sys_jump_1, 1, 1);
-		make_uint((*dst)++, 0);										// Dummy value1
-		make_uint(save_dst1+1, *dst - save_dst1);					// Real value1
-		compile_term(pr, cl, dst, src);								// RHS
-		make_uint(save_dst2+1, *dst - save_dst2);					// Real value2
-		make_instr((*dst)++, g_true_s, bif_iso_true_0, 0, 0);		// Landing
-		set_block_length(save_dst1, *dst);
-		return;
-	}
 
 	// T1 -> T2
 
@@ -242,32 +319,6 @@ static void compile_term(predicate *pr, clause *cl, cell **dst, cell **src)
 		make_instr((*dst)++, g_sys_drop_barrier_s, bif_sys_drop_barrier_1, 1, 1);
 		make_var((*dst)++, g_anon_s, var_num);
 		compile_term(pr, cl, dst, src);								// Arg2
-		set_block_length(save_dst1, *dst);
-		return;
-	}
-
-	if (((*src)->val_off == g_if_s) && (get_arity((*src)) == 3)) {
-		cell *src0 = *src;
-		*src += 1;
-		unsigned var_num = cl->num_vars++;
-		cell *save_dst1 = *dst;
-		make_instr((*dst)++, g_sys_succeed_on_retry_s, bif_sys_succeed_on_retry_2, 4, 4);
-		make_var((*dst)++, g_anon_s, var_num);
-		make_uint((*dst)++, 0);										// Dummy value1
-		make_block_info(dst, src0);
-		compile_term(pr, cl, dst, src);								// Arg1
-		make_instr((*dst)++, g_sys_cut_s, bif_sys_cut_1, 1, 1);
-		make_var((*dst)++, g_anon_s, var_num);
-		make_instr((*dst)++, g_sys_drop_barrier_s, bif_sys_drop_barrier_1, 1, 1);
-		make_var((*dst)++, g_anon_s, var_num);
-		compile_term(pr, cl, dst, src);								// Arg2
-		cell *save_dst2 = *dst;
-		make_instr((*dst)++, g_sys_jump_s, bif_sys_jump_1, 1, 1);
-		make_uint((*dst)++, 0);										// Dummy value2
-		make_uint(save_dst1+2, *dst - save_dst1);					// Real value1
-		compile_term(pr, cl, dst, src);								// Arg3
-		make_uint(save_dst2+1, *dst - save_dst2);					// Real value2
-		make_instr((*dst)++, g_true_s, bif_iso_true_0, 0, 0);		// Landing
 		set_block_length(save_dst1, *dst);
 		return;
 	}

@@ -1,0 +1,6 @@
+conj: call ok, asserted ok
+disj: call ok, asserted ok
+ite: call ok, asserted ok
+soft: call ok, asserted ok
+if3: call ok, asserted ok
+consulted: ok, last declared dynamic

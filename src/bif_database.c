@@ -401,24 +401,28 @@ static bool bif_sys_create_module_1(query *q)
 
 static bool do_thread_local(query *q, cell *c, pl_ctx c_ctx, module *m)
 {
-	c = deref(q, c, c_ctx);
-	c_ctx = q->latest_ctx;
+	// A list or conjunction's tail is looped rather than recursed, so a long one can't exhaust the C stack
 
-	if (is_var(c))
-		return throw_error(q, c, c_ctx, "instantiation_error", "predicate_indicator");
+	for (;;) {
+		c = deref(q, c, c_ctx);
+		c_ctx = q->latest_ctx;
 
-	if (is_iso_list(c)) {
+		if (is_var(c))
+			return throw_error(q, c, c_ctx, "instantiation_error", "predicate_indicator");
+
+		if (!is_iso_list(c) && !(is_interned(c) && (get_arity(c) == 2) && (c->val_off == g_conjunction_s)))
+			break;
+
 		cell *h = c + 1, *t = h + h->num_cells;
-		return do_thread_local(q, h, c_ctx, m) && do_thread_local(q, t, c_ctx, m);
+
+		if (!do_thread_local(q, h, c_ctx, m))
+			return false;
+
+		c = t;
 	}
 
 	if (is_nil(c))
 		return true;
-
-	if (is_interned(c) && (get_arity(c) == 2) && (c->val_off == g_conjunction_s)) {
-		cell *h = c + 1, *t = h + h->num_cells;
-		return do_thread_local(q, h, c_ctx, m) && do_thread_local(q, t, c_ctx, m);
-	}
 
 	if (is_interned(c) && (get_arity(c) == 2) && (c->val_off == g_colon_s)) {
 		cell *cm = deref(q, c + 1, c_ctx);
