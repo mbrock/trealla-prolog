@@ -1190,10 +1190,11 @@ static bool bif_abolish_2(query *q)
 	return ok;
 }
 
+// Fails for a reference to a clause already gone, erased, retracted or abolished, as in SWI.
+
 bool do_erase(module* m, const char *str)
 {
-	erase_from_db(m, clause_ref_from_buf(str));
-	return true;
+	return erase_from_db(m, clause_ref_from_buf(str)) != NULL;
 }
 
 static bool bif_erase_1(query *q)
