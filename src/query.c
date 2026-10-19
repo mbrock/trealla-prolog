@@ -1089,23 +1089,35 @@ static void drain_complete(predicate *pr)
 
 #define TOUCH_SHARED UINT64_MAX
 
+// 64-bit atomics only where there are threads to need them: a 32-bit freestanding target has none to link
+
+#if USE_THREADS
+#define touch_load(p) __atomic_load_n(p, __ATOMIC_RELAXED)
+#define touch_store(p, v) __atomic_store_n(p, v, __ATOMIC_RELAXED)
+#define touch_claim(p, t, v) __atomic_compare_exchange_n(p, t, v, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)
+#else
+#define touch_load(p) (*(p))
+#define touch_store(p, v) (*(p) = (v))
+#define touch_claim(p, t, v) (*(p) = (v), true)
+#endif
+
 // Only matching binds into a clause's cells or runs out of them (a fact's too, see tests/misc/db_purge_window.pl),
 // so the first query to match marks it with its push clock, and a second makes it shared for good.
 
 static void touch_rule(query *q, rule *r)
 {
 	const uint64_t me = q->qid + 1;
-	uint64_t t = __atomic_load_n(&r->touch_qid, __ATOMIC_RELAXED);
+	uint64_t t = touch_load(&r->touch_qid);
 
 	if ((t == me) || (t == TOUCH_SHARED))
 		return;
 
 	if ((q->pl->q_cnt == 1)
-		|| (!t && __atomic_compare_exchange_n(&r->touch_qid, &t, me, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED))) {
+		|| (!t && touch_claim(&r->touch_qid, &t, me))) {
 		r->touch_qid = me;
 		r->touch_at = q->push_clock;
 	} else
-		__atomic_store_n(&r->touch_qid, TOUCH_SHARED, __ATOMIC_RELAXED);
+		touch_store(&r->touch_qid, TOUCH_SHARED);
 }
 
 // Where a reclaimed clause waits to be freed. If this query made the only live bindings into it, they
@@ -1151,7 +1163,7 @@ static unsigned seed_from(uint64_t pid, uint64_t id)
 	return (unsigned)(x ^ (x >> 32));
 }
 
-static pl_atomic uint64_t g_query_id = 0;	// process-wide; taken under live_guard, so a query is live once it has one
+static uint64_t g_query_id = 0;	// process-wide; taken under live_guard, so a query is live once it has one
 
 // Freed once every query alive now has ended, as any of them might hold it.
 
@@ -3962,9 +3974,9 @@ static query *query_create_(module *m, bool is_toplevel)
 	q->double_quotes = false;
 
 #ifndef __wasi__
-	q->rand_seed = seed_from(getpid(), g_query_id);
+	q->rand_seed = seed_from(getpid(), q->qid);
 #else
-	q->rand_seed = seed_from(clock(), g_query_id);
+	q->rand_seed = seed_from(clock(), q->qid);
 #endif
 
 	//if (is_threaded) q->trace = 1;
