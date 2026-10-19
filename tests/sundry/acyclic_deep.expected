@@ -1,0 +1,9 @@
+acyclic_term, 100k deep: yes
+cyclic_term, 100k deep: no
+must_be(acyclic), 100k deep: yes
+acyclic_term, cycle 100k round: no
+cyclic_term, cycle 100k round: yes
+acyclic_term, shared 1000 levels: yes
+acyclic_term, shared 1000 levels over a cycle: no
+acyclic_term, shared siblings: yes
+acyclic_term, cyclic list: no

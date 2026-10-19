@@ -267,19 +267,14 @@ static void cyclic_stack_abort(query *q, list *stack)
 	}
 }
 
-// Stack iteration as in collect_vars_internal(): each frame walks one
-// compound's arguments left-to-right; vgen restore for the slot that led
-// here is deferred until the frame pops (recursive-return point). That
-// keeps ancestor marks live for cycle detection and removes the need for
-// a post-pass RESTORE_VAR over list spines.
-static bool is_cyclic_term_internal(query *q, cell *p1, pl_ctx p1_ctx, unsigned depth)
-{
-	if (depth >= g_max_depth)
-		return true;
+// A variable is marked q->vgen while its binding is walked and done after: a marked one met again is a cycle, a done one is skipped, so a shared subterm is walked once
 
+static bool is_cyclic_term_internal(query *q, cell *p1, pl_ctx p1_ctx)
+{
 	if (!is_compound(p1) || is_ground(p1))
 		return false;
 
+	const uint32_t done = (q->vgen == 1) ? 2 : 1;
 	list stack = {0};
 	vnode *n = TPL_malloc(sizeof(vnode));
 
@@ -289,7 +284,7 @@ static bool is_cyclic_term_internal(query *q, cell *p1, pl_ctx p1_ctx, unsigned 
 	n->arity = get_arity(p1);
 	n->p1 = p1 + 1;
 	n->p1_ctx = p1_ctx;
-	n->depth = depth;
+	n->depth = 0;
 	n->e = NULL;
 	n->save_vgen = 0;
 	list_push_back(&stack, n);
@@ -297,20 +292,14 @@ static bool is_cyclic_term_internal(query *q, cell *p1, pl_ctx p1_ctx, unsigned 
 	while ((n = (vnode*)list_back(&stack)) != NULL) {
 		if (!n->arity) {
 			slot *pending_e = n->e;
-			uint32_t pending_vgen = n->save_vgen;
 
 			list_pop_back(&stack);
 			TPL_free(n);
 
 			if (pending_e)
-				set_vgen(q, pending_e, pending_vgen);
+				set_vgen(q, pending_e, done);
 
 			continue;
-		}
-
-		if (n->depth >= g_max_depth) {
-			cyclic_stack_abort(q, &stack);
-			return true;
 		}
 
 		n->arity--;
@@ -329,6 +318,11 @@ static bool is_cyclic_term_internal(query *q, cell *p1, pl_ctx p1_ctx, unsigned 
 			return true;
 		}
 
+		if (e && (save_vgen == done)) {
+			set_vgen(q, e, done);
+			continue;
+		}
+
 		if (is_compound(c) && !is_ground(c)) {
 			vnode *cn = TPL_malloc(sizeof(vnode));
 
@@ -340,14 +334,12 @@ static bool is_cyclic_term_internal(query *q, cell *p1, pl_ctx p1_ctx, unsigned 
 			cn->arity = get_arity(c);
 			cn->p1 = c + 1;
 			cn->p1_ctx = c_ctx;
-			// List spines do not consume depth (same as the old iterative
-			// is_cyclic_term_lists); only non-list compounds do.
-			cn->depth = is_iso_list(c) ? n->depth : n->depth + 1;
+			cn->depth = 0;
 			cn->e = e;
 			cn->save_vgen = save_vgen;
 			list_push_back(&stack, cn);
 		} else if (e)
-			set_vgen(q, e, save_vgen);
+			set_vgen(q, e, done);
 	}
 
 	return false;
@@ -356,7 +348,7 @@ static bool is_cyclic_term_internal(query *q, cell *p1, pl_ctx p1_ctx, unsigned 
 bool is_cyclic_term(query *q, cell *p1, pl_ctx p1_ctx)
 {
 	if (++q->vgen == 0) q->vgen = 1;
-	return is_cyclic_term_internal(q, p1, p1_ctx, 0);
+	return is_cyclic_term_internal(q, p1, p1_ctx);
 }
 
 bool is_acyclic_term(query *q, cell *p1, pl_ctx p1_ctx)
