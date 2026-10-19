@@ -566,7 +566,9 @@ void detach_clauses(predicate *pr)
 
 static void destroy_predicate(module *m, predicate *pr)
 {
-	sl_del(m->index, &pr->key);
+	// This header's own entry: an abolished one can share its key, and its entry would outlive it
+
+	sl_rem(m->index, &pr->key, pr);
 	m->pl->pred_gen++;
 
 	while (pr->head) {
