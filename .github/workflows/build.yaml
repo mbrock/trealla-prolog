@@ -353,7 +353,9 @@
           if: steps.cache-cosmocc.outputs.cache-hit != 'true'
           run: |
             mkdir -p "${RUNNER_TEMP}/cosmocc"
-            curl -fsSL "https://cosmo.zip/pub/cosmocc/cosmocc-${COSMOCC_VERSION}.zip" -o "${RUNNER_TEMP}/cosmocc.zip"
+            # GitHub's copy of the release first: runners have been refused by cosmo.zip
+            curl -fsSL --retry 3 "https://github.com/jart/cosmopolitan/releases/download/${COSMOCC_VERSION}/cosmocc-${COSMOCC_VERSION}.zip" -o "${RUNNER_TEMP}/cosmocc.zip" \
+              || curl -fsSL --retry 3 "https://cosmo.zip/pub/cosmocc/cosmocc-${COSMOCC_VERSION}.zip" -o "${RUNNER_TEMP}/cosmocc.zip"
             unzip -q "${RUNNER_TEMP}/cosmocc.zip" -d "${RUNNER_TEMP}/cosmocc"
         - name: Add cosmocc to PATH
           run: echo "${RUNNER_TEMP}/cosmocc/bin" >> "$GITHUB_PATH"
@@ -584,8 +586,9 @@
       continue-on-error: true
       timeout-minutes: 30
       env:
-        RISCOS_TOOLCHAIN_URL: https://github.com/netsurf-browser/toolchains/releases/download/gh-master-unstable/arm-riscos-gnueabi.tar.gz
-        RISCOS_TOOLCHAIN_SHA256: c1a5d741494bc9c034c8a5338ad07a9249781152064620c00ca9490e210828fd
+        RISCOS_TOOLCHAIN_REPO: netsurf-browser/toolchains
+        RISCOS_TOOLCHAIN_TAG: gh-master-unstable
+        RISCOS_TOOLCHAIN_ASSET: arm-riscos-gnueabi.tar.gz
         GCCSDK_INSTALL_CROSSBIN: /opt/netsurf/arm-riscos-gnueabi/cross/bin
         GCCSDK_INSTALL_ENV: /opt/netsurf/arm-riscos-gnueabi/env
       steps:
@@ -593,12 +596,17 @@
           with:
             fetch-depth: 0
         - name: Install RISC OS cross-toolchain
+          env:
+            GH_TOKEN: ${{ github.token }}
           run: |
+            # A rolling build, rebuilt under the same name, so it's checked against the digest GitHub publishes for it now
+            digest=$(gh api "repos/${RISCOS_TOOLCHAIN_REPO}/releases/tags/${RISCOS_TOOLCHAIN_TAG}" \
+              --jq ".assets[] | select(.name == \"${RISCOS_TOOLCHAIN_ASSET}\") | .digest")
             curl --fail --location --retry 3 \
-              --output "${RUNNER_TEMP}/arm-riscos-gnueabi.tar.gz" \
-              "$RISCOS_TOOLCHAIN_URL"
-            echo "$RISCOS_TOOLCHAIN_SHA256  ${RUNNER_TEMP}/arm-riscos-gnueabi.tar.gz" | sha256sum --check
-            sudo tar -xzf "${RUNNER_TEMP}/arm-riscos-gnueabi.tar.gz" -C /
+              --output "${RUNNER_TEMP}/${RISCOS_TOOLCHAIN_ASSET}" \
+              "https://github.com/${RISCOS_TOOLCHAIN_REPO}/releases/download/${RISCOS_TOOLCHAIN_TAG}/${RISCOS_TOOLCHAIN_ASSET}"
+            echo "${digest#sha256:}  ${RUNNER_TEMP}/${RISCOS_TOOLCHAIN_ASSET}" | sha256sum --check
+            sudo tar -xzf "${RUNNER_TEMP}/${RISCOS_TOOLCHAIN_ASSET}" -C /
         - name: Cross-build for RISC OS
           run: |
             export PATH="$GCCSDK_INSTALL_CROSSBIN:$PATH"
