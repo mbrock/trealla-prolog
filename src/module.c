@@ -1174,28 +1174,6 @@ void index_remove_clause(predicate *pr, rule *r)
 		sl_rem(pr->idx3, c, r);
 }
 
-// For a reconsult: pr's recorded properties go, and those its declarations still imply come back
-// (the declarations outlive it, as in Scryer); static is noted again with its next clause.
-
-static void purge_properties(predicate *pr, bool keep)
-{
-	module *m = pr->m;
-	char name[1024];
-	snprintf(name, sizeof(name), "%s", C_STR(m, &pr->key));	// push_property() can move the atom table
-	const unsigned arity = get_arity(&pr->key);
-	clear_property(m, name, arity);
-	pr->is_static_noted = false;
-
-	if (!keep)
-		return;
-
-	if (pr->is_dynamic) push_property(m, name, arity, "dynamic");
-	if (pr->is_thread_local) push_property(m, name, arity, "thread_local");
-	if (pr->is_discontiguous) push_property(m, name, arity, "discontiguous");
-	if (pr->is_multifile) push_property(m, name, arity, "multifile");
-	if (pr->is_public) push_property(m, name, arity, "public");
-}
-
 // $predicate_property holds a clause per property per predicate, so asking it whether a
 // predicate has any properties by walking it made creating the Nth predicate cost O(N) and
 // consulting a file quadratic in the predicates it defines - 4.6s for 40,000 of them where
@@ -3282,32 +3260,138 @@ module *load_text(module *m, const char *src, const char *filename)
 	return save_m;
 }
 
+// The recorded properties of every predicate in keys, in one walk of the table: one walk each made
+// reconsulting a file quadratic in the predicates it defines. Freed only once all are out of the index.
+
+static void purge_properties(module *m, skiplist *keys)
+{
+	cell tmp;
+	make_atom(&tmp, new_atom(m->pl, "$predicate_property"));
+	set_arity(&tmp, 3);
+	predicate *pr = find_predicate(m, &tmp);
+
+	if (!pr)
+		return;
+
+	list doomed;
+	list_init(&doomed);
+
+	for (rule *r = pr->head; r; r = r->next) {
+		const cell *key = r->cl.cells + 1;		// Name/Arity, see format_property()
+
+		if (r->dbgen_retracted || !is_compound(key) || (get_arity(key) != 2))
+			continue;
+
+		const cell *n = key + 1;
+		const cell *a = n + n->num_cells;
+
+		if (!is_smallint(a))
+			continue;
+
+		const unsigned arity = get_smallint(a);
+		uint64_t k = is_interned(n) ? (((uint64_t)n->val_off << 32) | arity) : property_key(m, C_STR(m, n), arity);
+
+		if (!sl_get(keys, (void*)(size_t)k, NULL))
+			continue;
+
+		if (pr->refcnt)
+			retract_from_db(m, r);			// on dirty, for the last reader out to reclaim
+		else {
+			if (pr->idx1)
+				index_remove_clause(pr, r);
+
+			list_push_back(&doomed, r);
+		}
+	}
+
+	rule *r;
+	bool removed = false;
+
+	while ((r = list_pop_front(&doomed)) != NULL) {
+		predicate_delink(pr, r);
+		clear_clause(&r->cl);
+		TPL_free(r);
+		pr->cnt--;
+		removed = true;
+	}
+
+	if (removed && (pr->is_var_in_head || pr->is_var_in_first_arg || pr->is_var_in_idx2_arg))
+		recheck_var_in_indexed_args(pr);
+}
+
+// Those its declarations still imply come back, as declarations outlive a reconsult (as in Scryer);
+// static is noted again with its next clause.
+
+static void rerecord_properties(predicate *pr)
+{
+	module *m = pr->m;
+	char name[1024];
+	snprintf(name, sizeof(name), "%s", C_STR(m, &pr->key));	// push_property() can move the atom table
+	const unsigned arity = get_arity(&pr->key);
+
+	if (pr->is_dynamic) push_property(m, name, arity, "dynamic");
+	if (pr->is_thread_local) push_property(m, name, arity, "thread_local");
+	if (pr->is_discontiguous) push_property(m, name, arity, "discontiguous");
+	if (pr->is_multifile) push_property(m, name, arity, "multifile");
+	if (pr->is_public) push_property(m, name, arity, "public");
+}
+
 static bool unload_realfile(module *m, const char *filename)
 {
-	for (predicate *pr = list_front(&m->predicates); pr; ) {
-		if (pr->filename && strcmp(pr->filename, filename)) {
-			pr = list_next(pr);
+	skiplist *keys = sl_create(NULL, NULL, NULL);
+	predicate **kept = NULL;
+	unsigned num_kept = 0, max_kept = 0;
+
+	for (predicate *pr = list_front(&m->predicates); pr; pr = list_next(pr)) {
+		if (pr->filename && strcmp(pr->filename, filename))
 			continue;
-		}
+
+		const uint64_t k = property_key(m, C_STR(m, &pr->key), get_arity(&pr->key));
+
+		if (keys)
+			sl_set(keys, (void*)(size_t)k, NULL);
+
+		if (m->props)
+			sl_del(m->props, (void*)(size_t)k);
+
+		pr->is_static_noted = false;
 
 		// A query still inside it keeps its clauses until the last such query leaves.
 
 		if (pr->refcnt) {
-			purge_properties(pr, false);
-
 			for (rule *r = pr->head; r; r = r->next)
 				retract_from_db(m, r);
 
 			pr->is_abolished = true;
 			m->pl->pred_gen++;
-		} else {
-			detach_clauses(pr);
-			purge_properties(pr, true);
+			continue;
 		}
 
-		pr = list_next(pr);
+		detach_clauses(pr);
+
+		if (num_kept == max_kept) {
+			const unsigned want = max_kept ? max_kept * 2 : 64;
+			predicate **tmp = TPL_realloc(kept, want * sizeof(*kept));
+
+			if (!tmp)
+				continue;
+
+			kept = tmp;
+			max_kept = want;
+		}
+
+		kept[num_kept++] = pr;
 	}
 
+	if (keys) {
+		purge_properties(m, keys);
+		sl_destroy(keys);
+	}
+
+	for (unsigned i = 0; i < num_kept; i++)
+		rerecord_properties(kept[i]);
+
+	TPL_free(kept);
 	set_unloaded(m, filename);
 	return true;
 }
