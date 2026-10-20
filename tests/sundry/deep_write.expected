@@ -1,0 +1,27 @@
+f(f(...)) 2k-write: not cut off
+f(f(...)) 2k-writeq: not cut off
+f(f(...)) 2k-print: not cut off
+f(f(...)) 2k-write_canonical: not cut off
+f(f(...)) 2k-write_term: not cut off
+f(f(...)) 2k-format_w: not cut off
+f(f(...)) 2k-format_q: not cut off
+f(f(...)) 2k-term_to_atom: not cut off
+f(f(...)) 2k-write_term_to_atom: not cut off
+f(f(...)) 2k-write_canonical_to_chars: not cut off
+f(f(...)) 100k-write: not cut off
+f(f(...)) 100k-writeq: not cut off
+f(f(...)) 100k-print: not cut off
+f(f(...)) 100k-write_canonical: not cut off
+f(f(...)) 100k-write_term: not cut off
+f(f(...)) 100k-format_w: not cut off
+f(f(...)) 100k-format_q: not cut off
+f(f(...)) 100k-term_to_atom: not cut off
+f(f(...)) 100k-write_term_to_atom: not cut off
+f(f(...)) 100k-write_canonical_to_chars: not cut off
+(a, a, ...) 100k: not cut off
+1+1+... 100k: not cut off
+a-(a-(...)) 100k: not cut off
+\+ \+ ... 100k: not cut off
+text a raising write leaves: none of it or all of it
+cyclic f(f(...)): still cut off with ...
+format ~w of a cyclic term: resource_error(cyclic)

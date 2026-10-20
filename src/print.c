@@ -1611,9 +1611,8 @@ static bool print_canonical_compound(query *q, cell *c, pl_ctx c_ctx, bool runni
 			cell *tmp = c;
 			pl_ctx tmp_ctx = c_ctx;
 			tmp = deref_if(q, running, tmp, &tmp_ctx);
-			bool is_cyclic = has_visited(visited, tmp, tmp_ctx);
-
-			if (q->is_dump_vars && is_cyclic) {
+			// Only dumping names the cycle, so only then walk the ancestors
+			if (q->is_dump_vars && has_visited(visited, tmp, tmp_ctx)) {
 				// Where the cycle closes. '...' was the only answer for
 				// an entry no query variable named, which reads as a
 				// depth elision even when no max_depth is set (issue
@@ -2276,13 +2275,23 @@ static bool print_chars_quoted(query *q, cell *c, pl_ctx c_ctx, int running, uns
 	return true;
 }
 
+// Where the outermost print_to_sb() began on this thread's stack
+static pl_thread_local char *g_print_base;
+
+// The writer recurses: stop at g_max_depth or half the stack, which -O0 and ASan frames reach far sooner
+static bool print_too_deep(unsigned depth)
+{
+	uintptr_t base = (uintptr_t)g_print_base, here = (uintptr_t)__builtin_frame_address(0);
+	return (depth > g_max_depth) || ((here < base) && ((base - here) / 512 > g_max_depth));
+}
+
 static bool print_term_dispatch(query *q, cell *c, pl_ctx c_ctx, int running, int cons, unsigned depth, visit *visited)
 {
 	/* ISO/Cor.3 7.10.5 write_term decision tree (plus Trealla specials). */
 
-	if (depth > g_max_depth) {
+	if (print_too_deep(depth)) {
 		emit(q, "...");
-		q->cycle_error = true;
+		q->cycle_error = q->print_cut = true;
 		q->last_thing = WAS_OTHER;
 		return false;
 	}
@@ -2460,9 +2469,18 @@ static bool print_to_sb(query *q, cell *c, pl_ctx c_ctx, int running, bool canon
 	SB_init(q->sb);
 
 	visit me = {.next = NULL, .c = c, .c_ctx = c_ctx};
+	bool save_cut = q->print_cut;
+	q->print_cut = false;
+	char *save_base = g_print_base;
+	if (!save_base) g_print_base = __builtin_frame_address(0);
 	prolog_lock(q->pl);
 	print_term_dispatch(q, c, c_ctx, running, false, 0, &me);
 	prolog_unlock(q->pl);
+	g_print_base = save_base;
+
+	// Only a cycle or an answer dump may be cut off with ... silently
+	q->print_deep = q->print_cut && !q->is_dump_vars && !(running && is_cyclic_term(q, c, c_ctx));
+	q->print_cut = save_cut;
 
 	if (q->fullstop) emit_char(q, '.');
 	if (q->nl) emit_char(q, '\n');
@@ -2554,9 +2572,19 @@ char *print_canonical_to_strbuf(query *q, cell *c, pl_ctx c_ctx, int running)
 	return sb_take(q, ok);
 }
 
+static bool throw_print_deep(query *q)
+{
+	SB_free(q->sb);
+	return throw_error(q, q->st.instr, q->st.cur_ctx, "resource_error", "stack");
+}
+
 bool print_canonical_to_stream(query *q, stream *str, cell *c, pl_ctx c_ctx, int running)
 {
 	bool ok = print_to_sb(q, c, c_ctx, running, true, WAS_OTHER);
+
+	if (q->print_deep)
+		return throw_print_deep(q);
+
 	return sb_flush(q, str, str->fp_out, ok);
 }
 
@@ -2575,6 +2603,10 @@ char *print_term_to_strbuf(query *q, cell *c, pl_ctx c_ctx, int running)
 bool print_term_to_stream(query *q, stream *str, cell *c, pl_ctx c_ctx, int running)
 {
 	bool ok = print_to_sb(q, c, c_ctx, running, false, WAS_SPACE);
+
+	if (q->print_deep)
+		return throw_print_deep(q);
+
 	return sb_flush(q, str, str->fp_out, ok);
 }
 

@@ -4439,6 +4439,12 @@ static bool bif_write_term_to_atom_3(query *q)
 	q->variable_names_ctx = vnames_ctx;
 	char *dst = print_term_to_strbuf(q, p_term, p_term_ctx, 1);
 	clear_write_options(q);
+
+	if (q->print_deep) {
+		TPL_free(dst);
+		return throw_error(q, q->st.instr, q->st.cur_ctx, "resource_error", "stack");
+	}
+
 	cell tmp;
 	make_cstring(&tmp, dst);
 	TPL_free(dst);
@@ -4471,6 +4477,12 @@ static bool bif_write_term_to_chars_3(query *q)
 	q->variable_names_ctx = vnames_ctx;
 	char *dst = print_term_to_strbuf(q, p_term, p_term_ctx, 1);
 	clear_write_options(q);
+
+	if (q->print_deep) {
+		TPL_free(dst);
+		return throw_error(q, q->st.instr, q->st.cur_ctx, "resource_error", "stack");
+	}
+
 	cell tmp;
 	make_string(&tmp, dst);
 	TPL_free(dst);
@@ -4501,6 +4513,12 @@ static bool bif_write_canonical_to_chars_3(query *q)
 
 	char *dst = print_canonical_to_strbuf(q, p_term, p_term_ctx, 1);
 	clear_write_options(q);
+
+	if (q->print_deep) {
+		TPL_free(dst);
+		return throw_error(q, q->st.instr, q->st.cur_ctx, "resource_error", "stack");
+	}
+
 	cell tmp;
 	make_string(&tmp, dst);
 	TPL_free(dst);

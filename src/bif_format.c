@@ -781,10 +781,10 @@ bool do_format(query *q, cell *str, pl_ctx str_ctx, cell *p1, pl_ctx p1_ctx, cel
 
 			char *tmpbuf2 = print_term_to_strbuf(q, c, c_ctx, 1);
 
-			if (q->cycle_error) {
+			if (q->cycle_error || q->print_deep) {
 				TPL_free(tmpbuf2);		// the matching block below frees
 				TPL_free(tmpbuf);		// both; this one did not
-				return throw_error(q, c, q->st.cur_ctx, "resource_error", "cyclic");
+				return throw_error(q, c, q->st.cur_ctx, "resource_error", q->print_deep ? "stack" : "cyclic");
 			}
 
 			len = strlen(tmpbuf2);
@@ -849,10 +849,10 @@ bool do_format(query *q, cell *str, pl_ctx str_ctx, cell *p1, pl_ctx p1_ctx, cel
 
 			char *tmpbuf2 = print_term_to_strbuf(q, c, c_ctx, 1);
 
-			if (q->cycle_error) {
+			if (q->cycle_error || q->print_deep) {
 				TPL_free(tmpbuf2);
 				TPL_free(tmpbuf);
-				return throw_error(q, c, q->st.cur_ctx, "resource_error", "cyclic");
+				return throw_error(q, c, q->st.cur_ctx, "resource_error", q->print_deep ? "stack" : "cyclic");
 			}
 
 			len = strlen(tmpbuf2);
