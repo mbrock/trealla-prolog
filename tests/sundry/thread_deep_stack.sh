@@ -47,4 +47,4 @@ EOF
 # The bigger the main stack the more a thread was trusted with; unlimited also tests the cap
 ulimit -s unlimited 2>/dev/null || ulimit -s 65520 2>/dev/null
 
-$TPL -q -g 'main, halt' $TMPPL
+$TPL -q -g main,halt $TMPPL
