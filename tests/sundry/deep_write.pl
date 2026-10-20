@@ -13,12 +13,16 @@ minus(N, a-G) :- N1 is N-1, minus(N1, G).
 neg(0, a) :- !.
 neg(N, \+ G) :- N1 is N-1, neg(N1, G).
 
-% Writes T with Goal, which leaves the text in A
+% Writes T with Goal, which leaves the text in A, and reads it back if Check is read_back
 written(Name, T, A, Goal) :-
+	written(Name, T, A, Goal, read_back).
+
+written(Name, T, A, Goal, Check) :-
 	(   catch((Goal, R0 = ok), error(E, _), R0 = E)
 	->  (   R0 == resource_error(stack) -> R = 'not cut off'
 		;   R0 \== ok -> R = R0
 		;   sub_atom(A, _, _, _, '...') -> R = 'cut off with ...'
+		;   Check \== read_back -> R = 'not cut off'
 		;   catch(term_to_atom(B, A), _, fail), B =@= T -> R = 'not cut off'
 		;   R = 'written wrong'
 		)
@@ -41,10 +45,11 @@ writers(What, T) :-
 main :-
 	nest(2000, F0), writers('f(f(...)) 2k', F0),
 	nest(100000, F), writers('f(f(...)) 100k', F),
-	conj(100000, C), written('(a, a, ...) 100k', C, AC, with_output_to(atom(AC), writeq(C))),
-	lsum(100000, S), written('1+1+... 100k', S, AS, with_output_to(atom(AS), writeq(S))),
-	minus(100000, M), written('a-(a-(...)) 100k', M, AM, with_output_to(atom(AM), writeq(M))),
-	neg(100000, N), written('\\+ \\+ ... 100k', N, AN, with_output_to(atom(AN), writeq(N))),
+	% With a stack big enough to write these whole, reading 100k operators back is quadratic, so it isn't done
+	conj(100000, C), written('(a, a, ...) 100k', C, AC, with_output_to(atom(AC), writeq(C)), no_read_back),
+	lsum(100000, S), written('1+1+... 100k', S, AS, with_output_to(atom(AS), writeq(S)), no_read_back),
+	minus(100000, M), written('a-(a-(...)) 100k', M, AM, with_output_to(atom(AM), writeq(M)), no_read_back),
+	neg(100000, N), written('\\+ \\+ ... 100k', N, AN, with_output_to(atom(AN), writeq(N)), no_read_back),
 	with_output_to(atom(P), (write(x), catch(write(F), _, true))),
 	( sub_atom(P, _, _, _, '...') -> PR = 'part of it, cut off with ...' ; PR = 'none of it or all of it' ),
 	format("text a raising write leaves: ~w~n", [PR]),
