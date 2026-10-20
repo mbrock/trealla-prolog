@@ -1,0 +1,11 @@
+unify, 100k deep: yes
+unify differing at the bottom: no
+==, 100k deep: yes
+compare, 100k deep: yes
+unify, 100k left-nested: yes
+==, 100k left-nested: yes
+subsumes_term, 100k deep: yes
+unify_with_occurs_check, 100k deep: yes
+unify, cycles of 100k: yes
+==, cycles of 100k: yes
+unify, cycles of 100k and 200k: yes

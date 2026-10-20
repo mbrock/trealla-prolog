@@ -10,19 +10,95 @@
 
 #define UNIFY_MEMO_AFTER 32
 
-// How deep unify_internal() may recurse. Each level costs 120 bytes of C stack, measured, so
-// 8192 is under a megabyte against the 8M both the main thread and, since we now ask for it,
-// every other thread gets. Exceeding it is an error: it used to return true, which silently
-// unified terms that differ below the limit. A WASM build runs on a far smaller stack.
+// Past this depth unify and compare use a heap stack, so term depth is bounded by memory
 
-#if defined(__wasi__) || defined(__EMSCRIPTEN__)
-#define MAX_UNIFY_DEPTH 1024
-#else
-#define MAX_UNIFY_DEPTH 8192
-#endif
+#define UNIFY_DEEP 1024
+
+// The arguments still to do of a compound pair
+
+typedef struct {
+	cell *p1, *p2;
+	pl_ctx p1_ctx, p2_ctx;
+	uint32_t arity;
+} pair_frame;
+
+static bool push_pair_frame(pair_frame **stack, unsigned *cnt, unsigned *max, cell *p1, pl_ctx p1_ctx, cell *p2, pl_ctx p2_ctx, uint32_t arity)
+{
+	if (*cnt == *max) {
+		unsigned n = *max ? *max * 2 : 64;
+		pair_frame *tmp = TPL_realloc(*stack, sizeof(pair_frame) * n);
+
+		if (!tmp)
+			return false;
+
+		*stack = tmp;
+		*max = n;
+	}
+
+	(*stack)[(*cnt)++] = (pair_frame){p1 + 1, p2 + 1, p1_ctx, p2_ctx, arity};
+	return true;
+}
+
+// The next argument pair; a frame goes before its last, so a chain of last arguments takes no stack
+
+static bool next_pair(query *q, pair_frame *stack, unsigned *cnt, cell **p1, pl_ctx *p1_ctx, cell **p2, pl_ctx *p2_ctx)
+{
+	if (!*cnt)
+		return false;
+
+	pair_frame *f = &stack[*cnt - 1];
+	*p1 = deref(q, f->p1, f->p1_ctx);
+	*p1_ctx = q->latest_ctx;
+	*p2 = deref(q, f->p2, f->p2_ctx);
+	*p2_ctx = q->latest_ctx;
+	f->p1 += f->p1->num_cells;
+	f->p2 += f->p2->num_cells;
+
+	if (!--f->arity)
+		(*cnt)--;
+
+	return true;
+}
 
 static int compare_internal(query *q, cell *p1, pl_ctx p1_ctx, cell *p2, pl_ctx p2_ctx, unsigned depth);
 static bool compound_pair_seen(query *q, cell *c1, pl_ctx ctx1, cell *c2, pl_ctx ctx2);
+
+// Compounds past UNIFY_DEEP, compared left to right as the recursion would; other pairs go to compare_internal()
+
+static int compare_deep(query *q, cell *p1, pl_ctx p1_ctx, cell *p2, pl_ctx p2_ctx)
+{
+	pair_frame *stack = NULL;
+	unsigned cnt = 0, max = 0;
+	int val = 0;
+
+	do {
+		if (is_compound(p1) && is_compound(p2)) {
+			if (get_arity(p1) != get_arity(p2)) {
+				val = get_arity(p1) < get_arity(p2) ? -1 : 1;
+				break;
+			}
+
+			if ((val = CMP_STRING_TO_STRING(q, p1, p2)) != 0)
+				break;
+
+			if ((p1 == p2) && (p1_ctx == p2_ctx))
+				continue;
+
+			if ((++q->unify_seen_pairs > UNIFY_MEMO_AFTER)
+				&& compound_pair_seen(q, p1, p1_ctx, p2, p2_ctx))
+				continue;
+
+			if (!push_pair_frame(&stack, &cnt, &max, p1, p1_ctx, p2, p2_ctx, get_arity(p1))) {
+				val = compare_internal(q, p1, p1_ctx, p2, p2_ctx, 0);
+				break;
+			}
+		} else if ((val = compare_internal(q, p1, p1_ctx, p2, p2_ctx, 0)) != 0)
+			break;
+	} while (next_pair(q, stack, &cnt, &p1, &p1_ctx, &p2, &p2_ctx));
+
+	TPL_free(stack);
+	return val;
+}
 
 static int compare_lists(query *q, cell *p1, pl_ctx p1_ctx, cell *p2, pl_ctx p2_ctx, unsigned depth)
 {
@@ -232,6 +308,9 @@ static int compare_internal(query *q, cell *p1, pl_ctx p1_ctx, cell *p2, pl_ctx 
 
 		return compare_internal(q, p1, p1_ctx, p2, p2_ctx, depth+1);
 	}
+
+	if (depth > UNIFY_DEEP)
+		return compare_deep(q, p1, p1_ctx, p2, p2_ctx);
 
 	if (is_iso_list(p1) && is_iso_list(p2))
 		return compare_lists(q, p1, p1_ctx, p2, p2_ctx, depth+1);
@@ -700,6 +779,46 @@ static const struct dispatch g_disp[] =
 	{0}
 };
 
+// Compounds past UNIFY_DEEP, unified left to right as the recursion would; other pairs go to unify_internal()
+
+static bool unify_deep(query *q, cell *p1, pl_ctx p1_ctx, cell *p2, pl_ctx p2_ctx)
+{
+	pair_frame *stack = NULL;
+	unsigned cnt = 0, max = 0;
+	bool ok = true;
+
+	do {
+		if (is_interned(p1) && is_interned(p2) && (get_arity(p1) || get_arity(p2))) {
+			const uint32_t arity = get_arity(p1);
+
+			if ((arity != get_arity(p2)) || (p1->val_off != p2->val_off)) {
+				ok = false;
+				break;
+			}
+
+			if ((p1 == p2) && (p1_ctx == p2_ctx))
+				continue;
+
+			if ((++q->unify_seen_pairs > UNIFY_MEMO_AFTER)
+				&& compound_pair_seen(q, p1, p1_ctx, p2, p2_ctx))
+				continue;
+
+			if (!push_pair_frame(&stack, &cnt, &max, p1, p1_ctx, p2, p2_ctx, arity)) {
+				q->cycle_error++;
+				q->unify_too_deep = true;
+				ok = false;
+				break;
+			}
+		} else if (!unify_internal(q, p1, p1_ctx, p2, p2_ctx, 2)) {
+			ok = false;
+			break;
+		}
+	} while (next_pair(q, stack, &cnt, &p1, &p1_ctx, &p2, &p2_ctx));
+
+	TPL_free(stack);
+	return ok;
+}
+
 static bool unify_internal(query *q, cell *p1, pl_ctx p1_ctx, cell *p2, pl_ctx p2_ctx, unsigned depth)
 {
 	// Most of what head matching unifies is leaves: two atoms, or two small integers. Both walked
@@ -722,11 +841,8 @@ static bool unify_internal(query *q, cell *p1, pl_ctx p1_ctx, cell *p2, pl_ctx p
 		if ((arity != get_arity(p2)) || (p1->val_off != p2->val_off))
 			return false;
 
-		if (depth > MAX_UNIFY_DEPTH) {
-			q->cycle_error++;
-			q->unify_too_deep = true;
-			return false;
-		}
+		if (depth > UNIFY_DEEP)
+			return unify_deep(q, p1, p1_ctx, p2, p2_ctx);
 
 		if (p1->val_off == g_dot_s && (arity == 2))
 			return unify_lists(q, p1, p1_ctx, p2, p2_ctx, depth);
@@ -814,11 +930,8 @@ static bool unify_internal(query *q, cell *p1, pl_ctx p1_ctx, cell *p2, pl_ctx p
 		return false;
 	}
 
-	if (depth > MAX_UNIFY_DEPTH) {
-		q->cycle_error++;			// what unify() already tests; the flag says which kind
-		q->unify_too_deep = true;
-		return false;
-	}
+	if (depth > UNIFY_DEEP)
+		return unify_deep(q, p1, p1_ctx, p2, p2_ctx);
 
 	return g_disp[p1->tag].fn(q, p1, p1_ctx, p2, p2_ctx, depth);
 }

@@ -1186,7 +1186,7 @@ struct query_ {
 	bool end_wait:1;
 	bool waiting_io:1;
 	bool did_unhandled_exception:1;
-	bool unify_too_deep:1;				// recursion hit MAX_UNIFY_DEPTH; unify() turns it into an error
+	bool unify_too_deep:1;				// unify_deep() ran out of memory; unify() turns it into an error
 	lookup_entry lookup_cache[LOOKUP_CACHE_SIZE];
 };
 
