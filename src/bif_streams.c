@@ -4491,7 +4491,7 @@ static bool bif_write_term_to_chars_3(query *q)
 	return ok;
 }
 
-static bool bif_write_canonical_to_chars_3(query *q)
+static bool do_write_canonical_to(query *q, bool to_atom)
 {
 	GET_FIRST_ARG(p_chars,atom_or_var);
 	GET_NEXT_ARG(p_term,any);
@@ -4520,11 +4520,26 @@ static bool bif_write_canonical_to_chars_3(query *q)
 	}
 
 	cell tmp;
-	make_string(&tmp, dst);
+
+	if (to_atom)
+		make_cstring(&tmp, dst);
+	else
+		make_string(&tmp, dst);
+
 	TPL_free(dst);
 	bool ok = unify(q, p_chars, p_chars_ctx, &tmp, q->st.cur_ctx);
 	unshare_cell(&tmp);
 	return ok;
+}
+
+static bool bif_write_canonical_to_atom_3(query *q)
+{
+	return do_write_canonical_to(q, true);
+}
+
+static bool bif_write_canonical_to_chars_3(query *q)
+{
+	return do_write_canonical_to(q, false);
 }
 
 static bool bif_edin_redo_1(query *q)
@@ -7509,7 +7524,7 @@ builtins g_streams_bifs[] =
 	{"read_term_from_chars", 3, bif_read_term_from_chars_3, "+string,?term,+list", false, false, BLAH},
 	{"$read_term_from_chars", 4, bif_sys_read_term_from_chars_4, "?term,+list,+string,-string", false, false, BLAH},
 	{"write_term_to_atom", 3, bif_write_term_to_atom_3, "?atom,?term,+list", false, false, BLAH},
-	{"write_canonical_to_atom", 3, bif_write_canonical_to_chars_3, "?atom,?term,+list", false, false, BLAH},
+	{"write_canonical_to_atom", 3, bif_write_canonical_to_atom_3, "?atom,?term,+list", false, false, BLAH},
 	{"write_term_to_chars", 3, bif_write_term_to_chars_3, "?term,+list,?string", false, false, BLAH},
 	{"write_canonical_to_chars", 3, bif_write_canonical_to_chars_3, "?string,?term,+list", false, false, BLAH},
 	{"read_line_to_codes", 2, bif_read_line_to_codes_2, "+stream,-list", false, false, BLAH},

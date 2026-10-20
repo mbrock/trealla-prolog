@@ -1,0 +1,5 @@
+write_term_to_atom: atom f(a,'b c',[s],[1,2],- (1),1+2*3)
+write_canonical_to_atom: atom f(a,'b c','.'(s,[]),'.'(1,'.'(2,[])),-(1),+(1,*(2,3)))
+write_term_to_chars: string f(a,'b c',[s],[1,2],- (1),1+2*3)
+write_canonical_to_chars: string f(a,'b c','.'(s,[]),'.'(1,'.'(2,[])),-(1),+(1,*(2,3)))
+write_canonical_to_atom with the atom given: yes
