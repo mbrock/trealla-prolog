@@ -18,7 +18,8 @@ deep(Name, E, Want) :-
 main :-
 	tree(17, T), X is T, format("wide 128k sum: ~w~n", [X]),
 	( T =:= 131072 -> C = yes ; C = no ), format("wide 128k comparison: ~w~n", [C]),
-	lsum(2000, L2), Y is L2, format("left 2k sum: ~w~n", [Y]),
+	% Under the smallest limits: Windows ARM64's 1MB stack, and an ASan build's ~10KB a level in 8MB
+	lsum(200, L2), Y is L2, format("left 200 sum: ~w~n", [Y]),
 	lsum(100000, L), deep('left 100k sum', L, 100001),
 	rsum(100000, R), deep('right 100k sum', R, 100001),
 	Z is 1+2, format("evaluated afterwards: ~w~n", [Z]),
