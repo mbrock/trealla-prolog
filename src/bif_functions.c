@@ -304,12 +304,12 @@ static bool eval_too_deep(query *q)
 	if ((uintptr_t)__builtin_frame_address(0) < q->eval_floor)
 		return true;
 #endif
-	return q->max_eval_depth++ > q->depth_limit;
+	return q->eval_depth > q->depth_limit;
 }
 
 static void start_eval(query *q)
 {
-	q->max_eval_depth = 0;
+	q->eval_depth = 0;
 #ifdef DEBUG
 	uintptr_t base = (uintptr_t)__builtin_frame_address(0), budget = (uintptr_t)q->depth_limit * 512;
 	q->eval_floor = base > budget ? base - budget : 0;
@@ -333,9 +333,12 @@ bool call_builtin(query *q, cell *c, pl_ctx c_ctx)
 	if (!c->bif_ptr->evaluable && (c->val_off != g_float_s))
 		return throw_error(q, c, q->st.cur_ctx, "type_error", "evaluable");
 	else if (eval_too_deep(q))
-		return throw_error(q, q->st.instr, q->st.cur_ctx, "type_error", "evaluable");
-	else
+		return throw_error(q, q->st.instr, q->st.cur_ctx, "resource_error", "stack");
+	else {
+		unsigned depth = q->eval_depth++;	// a depth, not a count, so wide expressions are not refused
 		c->bif_ptr->fn(q);
+		q->eval_depth = depth;
+	}
 
 	q->eval = save_calc;
 

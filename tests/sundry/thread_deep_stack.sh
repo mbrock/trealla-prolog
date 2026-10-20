@@ -21,7 +21,7 @@ wrote(Where, T) :-
 	catch((with_output_to(atom(A), writeq(T)), \+ sub_atom(A, _, _, _, '...'), R = ok), error(resource_error(stack), _), R = ok),
 	format("~w write: ~w~n", [Where, R]).
 evaluated(Where, E) :-
-	catch((_ is E, R = ok), error(type_error(evaluable, _), _), R = ok),
+	catch((_ is E, R = ok), error(resource_error(stack), _), R = ok),
 	format("~w is: ~w~n", [Where, R]).
 
 deep(Where) :-

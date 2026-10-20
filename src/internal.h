@@ -1095,7 +1095,7 @@ struct query_ {
 	uint64_t get_started, yield_at;
 	uint64_t cpu_time;					// time/1 baseline, kept out of st so it survives backtracking
 	uint64_t time_cpu_last_started, future;
-	unsigned max_depth, max_eval_depth, print_idx, tab_idx, dump_var_num;
+	unsigned max_depth, eval_depth, print_idx, tab_idx, dump_var_num;
 	unsigned name_idx;		// next free generated-name number, see get_slot_name()
 	unsigned depth_limit;	// g_max_depth for the stack it runs on, copied as reading a thread local costs a call on macOS
 	uintptr_t eval_floor;	// how far down the stack the current is/2 or comparison may go (DEBUG builds)
