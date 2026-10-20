@@ -4061,8 +4061,11 @@ static bool parse_number(parser *p, const char **srcptr, bool neg)
 		return false;
 	}
 
+	// Unless '' is an operator, when 0'' is 0 and then ''
+
 	if ((s[0] == '0') && (s[1] == '\'') && (s[2] == '\'')
-		&& (isspace((unsigned char)s[3]) || (s[3] == '.') || (s[3] == ',') || (s[3] == ';') || !s[3])) {
+		&& (isspace((unsigned char)s[3]) || (s[3] == '.') || (s[3] == ',') || (s[3] == ';') || !s[3])
+		&& !search_op(p->m, "", NULL, false)) {
 		if (!p->do_read_term)
 			fprintf(stderr, "Error: syntax error, parsing number, %s:%d\n", get_loaded(p->m, p->m->filename), p->line_num);
 
@@ -5685,7 +5688,9 @@ next_token:
 				break;
 			}
 
-			if (p->was_consing || last_op) {
+			// A postfix operator completes its operand, so a comma may follow it
+
+			if (p->was_consing || (last_op && !st.last_postfix)) {
 				if (!p->do_read_term)
 					fprintf(stderr, "Error: syntax error, parsing list '%s', %s:%d\n", p->save_line?p->save_line:"", get_loaded(p->m, p->m->filename), p->line_num);
 
