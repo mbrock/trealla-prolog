@@ -876,6 +876,7 @@ static bool bif_iso_number_chars_2(query *q)
 	char *buf = print_term_to_strbuf(q, p1, p1_ctx, 1);
 	q->ignore_ops = false;
 	q->quoted = 0;
+	CHECKED(buf);
 	cell tmp;
 	make_string(&tmp, buf);
 	TPL_free(buf);
@@ -1471,6 +1472,7 @@ static bool bif_iso_number_codes_2(query *q)
 	char *buf = print_term_to_strbuf(q, p1, p1_ctx, 1);
 	q->ignore_ops = false;
 	q->quoted = 0;
+	CHECKED(buf);
 	cell tmp;
 	make_string(&tmp, buf);
 	tmp.flags |= FLAG_CSTR_CODES;
@@ -5547,6 +5549,7 @@ static bool bif_term_hash_2(query *q)
 		make_int(&tmp, fnv1a_64(C_STR(q, p1), C_STRLEN(q, p1)));
 	} else {
 		char *tmpbuf = print_term_to_strbuf(q, p1, p1_ctx, 1);
+		CHECKED(tmpbuf);
 		make_int(&tmp, fnv1a_64(tmpbuf, strlen(tmpbuf)));
 		TPL_free(tmpbuf);
 	}
@@ -5690,7 +5693,9 @@ static bool bif_atomic_concat_3(query *q)
 	GET_NEXT_ARG(p2,atomic);
 	GET_NEXT_ARG(p3,atom_or_var);
 	char *src1 = print_term_to_strbuf(q, p1, p1_ctx, 1);
+	CHECKED(src1);
 	char *src2 = print_term_to_strbuf(q, p2, p2_ctx, 1);
+	CHECKED(src2, TPL_free(src1));
 	SB(pr);
 	SB_strcat(pr, src1);
 	SB_strcat(pr, src2);
@@ -5805,6 +5810,7 @@ static bool do_atomic_list_concat_join(query *q, cell *p1, pl_ctx p1_ctx, cell *
 		q->parens = true;
 		char *dst = print_term_to_strbuf(q, h, q->latest_ctx, 1);
 		q->parens = false;
+		CHECKED(dst, SB_free(pr));
 		SB_strcat(pr, dst);
 		TPL_free(dst);
 
@@ -5816,6 +5822,7 @@ static bool do_atomic_list_concat_join(query *q, cell *p1, pl_ctx p1_ctx, cell *
 			q->parens = true;
 			dst = print_term_to_strbuf(q, p2, p2_ctx, 1);
 			q->parens = false;
+			CHECKED(dst, SB_free(pr));
 			SB_strcat(pr, dst);
 			TPL_free(dst);
 		}

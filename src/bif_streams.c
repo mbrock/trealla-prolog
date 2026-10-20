@@ -4439,6 +4439,7 @@ static bool bif_write_term_to_atom_3(query *q)
 	q->variable_names_ctx = vnames_ctx;
 	char *dst = print_term_to_strbuf(q, p_term, p_term_ctx, 1);
 	clear_write_options(q);
+	CHECKED(dst);
 
 	if (q->print_deep) {
 		TPL_free(dst);
@@ -4477,6 +4478,7 @@ static bool bif_write_term_to_chars_3(query *q)
 	q->variable_names_ctx = vnames_ctx;
 	char *dst = print_term_to_strbuf(q, p_term, p_term_ctx, 1);
 	clear_write_options(q);
+	CHECKED(dst);
 
 	if (q->print_deep) {
 		TPL_free(dst);
@@ -4513,6 +4515,7 @@ static bool do_write_canonical_to(query *q, bool to_atom)
 
 	char *dst = print_canonical_to_strbuf(q, p_term, p_term_ctx, 1);
 	clear_write_options(q);
+	CHECKED(dst);
 
 	if (q->print_deep) {
 		TPL_free(dst);

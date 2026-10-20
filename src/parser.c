@@ -3313,6 +3313,13 @@ static cell *goal_expansion_(parser *p, cell *goal)
 	q->max_depth = -1;
 	char *dst = print_canonical_to_strbuf(q, goal, 0, 0);
 	q->varnames = false;
+
+	if (!dst) {
+		query_destroy(q);
+		p->error = true;
+		return goal;
+	}
+
 	SB(s);
 	SB_sprintf(s, "goal_expansion((%s),_TermOut), !.", dst);
 	TPL_free(dst);
@@ -3394,7 +3401,7 @@ static cell *goal_expansion_(parser *p, cell *goal)
 		q->max_depth = -1;
 		src = print_canonical_to_strbuf(q, c, q->latest_ctx, 1);
 		q->varnames = false;
-		strcat(src, ".");
+		if (src) strcat(src, ".");
 		break;
 	}
 

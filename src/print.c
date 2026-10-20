@@ -2493,12 +2493,7 @@ static bool print_to_sb(query *q, cell *c, pl_ctx c_ctx, int running, bool canon
 	return !SB_oom(q->sb);
 }
 
-// Hand q->sb to the caller as a fresh allocation. The spare byte is
-// for dcg_expansion, which appends to the result in place.
-//
-// The two strbuf entry points used to disagree on a failed malloc:
-// one wrote through the null pointer, the other returned early and
-// leaked q->sb. Now neither happens.
+// Hand q->sb over as a fresh allocation (a spare byte for dcg_expansion), or NULL when out of memory for the caller to report
 
 static char *sb_take(query *q, bool ok)
 {
@@ -2508,10 +2503,6 @@ static char *sb_take(query *q, bool ok)
 		strcpy(buf, SB_cstr(q->sb));
 
 	SB_free(q->sb);
-
-	if (!buf)
-		(void)throw_error(q, q->st.instr, q->st.cur_ctx, "resource_error", "memory");
-
 	return buf;
 }
 

@@ -302,7 +302,7 @@ static void trace_call(query *q, cell *c, pl_ctx c_ctx, box_t box)
 	q->double_quotes = true;
 	char *dst = print_term_to_strbuf(q, c, c_ctx, -1);
 	TPL_free(as_member);
-	SB_strcat(pr, dst);
+	if (dst) SB_strcat(pr, dst);
 	TPL_free(dst);
 	q->quoted = false;
 	q->double_quotes = false;

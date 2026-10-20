@@ -619,6 +619,7 @@ bool do_format(query *q, cell *str, pl_ctx str_ctx, cell *p1, pl_ctx p1_ctx, cel
 			}
 
 			char *tmpbuf2 = print_term_to_strbuf(q, c, 0, 0);
+			CHECKED(tmpbuf2, TPL_free(tmpbuf));
 			len = strlen(tmpbuf2);
 			TPL_free(tmpbuf2);
 			CHECK_BUF(len*2+1);
@@ -640,6 +641,7 @@ bool do_format(query *q, cell *str, pl_ctx str_ctx, cell *p1, pl_ctx p1_ctx, cel
 			}
 
 			char *tmpbuf2 = print_term_to_strbuf(q, c, 0, 0);
+			CHECKED(tmpbuf2, TPL_free(tmpbuf));
 			len = strlen(tmpbuf2);
 			TPL_free(tmpbuf2);
 			CHECK_BUF(len*2+1);
@@ -662,6 +664,7 @@ bool do_format(query *q, cell *str, pl_ctx str_ctx, cell *p1, pl_ctx p1_ctx, cel
 
 
 			char *tmpbuf2 = print_term_to_strbuf(q, c, 0, 0);
+			CHECKED(tmpbuf2, TPL_free(tmpbuf));
 			len = strlen(tmpbuf2);
 			TPL_free(tmpbuf2);
 			CHECK_BUF(len*2+1);
@@ -688,6 +691,7 @@ bool do_format(query *q, cell *str, pl_ctx str_ctx, cell *p1, pl_ctx p1_ctx, cel
 			}
 
 			char *tmpbuf2 = print_term_to_strbuf(q, c, 0, 0);
+			CHECKED(tmpbuf2, TPL_free(tmpbuf));
 			len = strlen(tmpbuf2);
 			TPL_free(tmpbuf2);
 			CHECK_BUF(len*10);
@@ -714,6 +718,7 @@ bool do_format(query *q, cell *str, pl_ctx str_ctx, cell *p1, pl_ctx p1_ctx, cel
 			}
 
 			char *tmpbuf2 = print_term_to_strbuf(q, c, 0, 0);
+			CHECKED(tmpbuf2, TPL_free(tmpbuf));
 			len = strlen(tmpbuf2);
 			TPL_free(tmpbuf2);
 			CHECK_BUF(len*10);
@@ -780,6 +785,7 @@ bool do_format(query *q, cell *str, pl_ctx str_ctx, cell *p1, pl_ctx p1_ctx, cel
 			}
 
 			char *tmpbuf2 = print_term_to_strbuf(q, c, c_ctx, 1);
+			CHECKED(tmpbuf2, TPL_free(tmpbuf); clear_write_options(q));
 
 			if (q->cycle_error || q->print_deep) {
 				TPL_free(tmpbuf2);		// the matching block below frees
@@ -848,6 +854,7 @@ bool do_format(query *q, cell *str, pl_ctx str_ctx, cell *p1, pl_ctx p1_ctx, cel
 
 
 			char *tmpbuf2 = print_term_to_strbuf(q, c, c_ctx, 1);
+			CHECKED(tmpbuf2, TPL_free(tmpbuf); clear_write_options(q));
 
 			if (q->cycle_error || q->print_deep) {
 				TPL_free(tmpbuf2);

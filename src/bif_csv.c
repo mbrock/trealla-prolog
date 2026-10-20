@@ -440,6 +440,7 @@ static bool do_write_csv_line(query *q, parser* p, csv *params, cell *l, pl_ctx 
 		pl_ctx h_ctx = q->latest_ctx;
 
 		char *dst = print_term_to_strbuf(q, h, h_ctx, 1);
+		CHECKED(dst);
 		size_t len = strlen(dst);
 
 		if (!write_csv_field(p->fp, dst, len, params)) {

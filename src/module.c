@@ -1398,6 +1398,7 @@ void set_meta_predicate_in_db(module *m, cell *c)
 		q.pl = m->pl;
 		q.st.m = m;
 		char *dst = print_canonical_to_strbuf(&q, c, 0, 0);
+		ENSURE(dst);
 		char tmpbuf[1024];
 		snprintf(tmpbuf, sizeof(tmpbuf), "meta_predicate(%s)", dst);
 		TPL_free(dst);

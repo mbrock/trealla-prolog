@@ -1456,6 +1456,12 @@ bool find_exception_handler(query *q, char *ball)
 {
 	errno = 0;
 
+	// No text for the ball means no memory to write it, reported as below
+	if (!ball) {
+		q->oom = q->error = true;
+		return false;
+	}
+
 	while (retry_choice(q)) {
 		const choice *ch = GET_CHOICE(q->st.cp);
 

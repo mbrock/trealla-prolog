@@ -19,8 +19,17 @@
 // five times what holding it does and the print buffer stands alone by
 // size. Control characters escape in any locale.
 
-#define GOAL "length(L,60000), maplist(=(1),L), atom_codes(A,L), " \
-	"catch((writeq(A),nl),_,(write(oom),nl))."
+#define ATOM "length(L,60000), maplist(=(1),L), atom_codes(A,L), "
+
+// The writers that hand back text as well, which once crashed on the NULL a failed print gives them
+
+static const char *g_goals[] = {
+	ATOM "catch((writeq(A),nl),_,(write(oom),nl)).",
+	ATOM "catch((write_term_to_atom(B,A,[quoted(true)]),write(B),nl),_,(write(oom),nl)).",
+	ATOM "catch((format(atom(B),\"~q\",[A]),write(B),nl),_,(write(oom),nl)).",
+	ATOM "catch((term_to_atom(A,B),write(B),nl),_,(write(oom),nl)).",
+	ATOM "catch((write_canonical_to_atom(B,A,[]),write(B),nl),_,(write(oom),nl)).",
+};
 
 static size_t g_lo, g_hi;
 
@@ -93,7 +102,7 @@ static size_t attr_leak(size_t cap)
 
 // Run the goal with stdout on a file, and hand back what it wrote.
 
-static char *run(size_t lo, size_t hi, size_t *len)
+static char *run(const char *goal, size_t lo, size_t hi, size_t *len)
 {
 	prolog *pl = pl_create();
 	int saved = dup(1);
@@ -108,7 +117,7 @@ static char *run(size_t lo, size_t hi, size_t *len)
 
 	pl_sub_query *subq = NULL;
 	g_lo = lo; g_hi = hi;
-	pl_query(pl, GOAL, &subq, 0);
+	pl_query(pl, goal, &subq, 0);
 	g_lo = g_hi = 0;
 
 	if (subq)
@@ -138,30 +147,33 @@ int main(void)
 	if (!pl_set_allocator(&a))
 		return 1;
 
-	size_t len = 0;
-	char *out = run(0, 0, &len);
+	for (size_t i = 0; i < sizeof(g_goals)/sizeof(g_goals[0]); i++) {
+		size_t len = 0;
+		char *out = run(g_goals[i], 0, 0, &len);
 
-	if (!out || (len < 100*1024) || (out[0] != '\'') || (out[len-1] != '\n')) {
-		fprintf(stderr, "oom: expected the quoted atom, got %zu bytes\n", len);
-		return 1;
+		if (!out || (len < 100*1024) || (out[0] != '\'') || (out[len-1] != '\n')) {
+			fprintf(stderr, "oom: goal %zu: expected the quoted atom, got %zu bytes\n", i, len);
+			return 1;
+		}
+
+		free(out);
+		// Wide enough to catch a growth step, narrow enough to miss the
+		// engine's own allocations.
+
+		out = run(g_goals[i], len-1500, len+1500, &len);
+
+		// Anything else means it printed part of an answer it could not
+		// finish, or the error never reached the catcher.
+
+		if (!out || strcmp(out, "oom\n")) {
+			fprintf(stderr, "oom: goal %zu: expected a caught resource_error, got \"%.40s\"\n",
+				i, out ? out : "(null)");
+			return 1;
+		}
+
+		free(out);
 	}
 
-	free(out);
-	// Wide enough to catch a growth step, narrow enough to miss the
-	// engine's own allocations.
-
-	out = run(len-1500, len+1500, &len);
-
-	// Anything else means it printed part of an answer it could not
-	// finish, or the error never reached the catcher.
-
-	if (!out || strcmp(out, "oom\n")) {
-		fprintf(stderr, "oom: expected a caught resource_error, got \"%.40s\"\n",
-			out ? out : "(null)");
-		return 1;
-	}
-
-	free(out);
 	remove(TMPFILE);
 
 	for (size_t cap = 1000000; cap <= 8000000; cap += 500000) {
