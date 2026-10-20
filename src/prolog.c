@@ -1070,6 +1070,11 @@ static bool g_init(prolog *pl)
 	struct rlimit rlp;
 	getrlimit(RLIMIT_STACK, &rlp);
 	g_max_depth = rlp.rlim_cur / 1024;
+#elif defined(_WIN32)
+	// Windows has no limit to ask, only what the executable reserved: 2MB by mingw's default
+	ULONG_PTR stack_lo, stack_hi;
+	GetCurrentThreadStackLimits(&stack_lo, &stack_hi);
+	g_max_depth = (stack_hi - stack_lo) / 1024;
 #endif
 
 	g_max_os_threads = detect_max_os_threads();
