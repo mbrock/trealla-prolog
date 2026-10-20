@@ -179,6 +179,8 @@ static bool bif_engine_next_2(query *q)
 	if (str->engine->engine_done)
 		return throw_error(q, pstr, pstr_ctx, "existence_error", "engine");
 
+	str->engine->depth_limit = q->depth_limit;	// it runs on the asker's stack, perhaps another thread's
+
 	if (str->first_time) {
 		str->first_time = false;
 

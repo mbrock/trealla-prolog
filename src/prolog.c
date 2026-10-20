@@ -65,7 +65,7 @@ char *g_global_atoms = NULL;
 char *g_tpl_lib = NULL;
 int g_ac = 0, g_avc = 1, g_argvc = 0;
 char **g_av = NULL, **g_argv = NULL, *g_argv0 = NULL;
-unsigned g_max_depth = 6000;			// default recursion limit (Linux)
+pl_thread_local unsigned g_max_depth = 6000;	// default recursion limit (Linux), per thread as each has its own stack
 unsigned g_max_os_threads = 0;			// ditto; 0 means "none known"
 
 bool is_multifile_in_db(prolog *pl, const char *mod, const char *name, unsigned arity)
@@ -1069,7 +1069,8 @@ static bool g_init(prolog *pl)
 #if !TPL_FREESTANDING && !defined(_WIN32) && !defined(__wasi__) && !defined(__ANDROID__)
 	struct rlimit rlp;
 	getrlimit(RLIMIT_STACK, &rlp);
-	g_max_depth = rlp.rlim_cur / 1024;
+	// An unlimited stack has no size to go by, so assume what a thread gets
+	g_max_depth = rlp.rlim_cur == RLIM_INFINITY ? THREAD_STACK_SIZE / 1024 : rlp.rlim_cur / 1024;
 #elif defined(_WIN32)
 	// No limit to ask, only what the executable reserved (2MB by mingw's default), whose base VirtualQuery() finds
 	MEMORY_BASIC_INFORMATION mbi;

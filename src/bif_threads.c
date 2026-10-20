@@ -1217,6 +1217,7 @@ static void *start_routine_thread_create(thread *t)
 {
 	t->id = pthread_self();
 	g_self_thread = t;
+	g_max_depth = THREAD_STACK_SIZE / 1024;	// not the main thread's, which may be far bigger
 	acquire_lock(&t->guard);
 	t->alertable = true;					// see alert_thread()
 	release_lock(&t->guard);
@@ -1475,7 +1476,7 @@ static bool bif_thread_create_3(query *q)
 	// macOS gives a thread 512K by default where the main thread gets 8M, so deep recursion
 	// would hit a limit on a thread that it does not on the main one. Ask for the same 8M.
 
-	pthread_attr_setstacksize(&sa, 8 * 1024 * 1024);
+	pthread_attr_setstacksize(&sa, THREAD_STACK_SIZE);
 
 	if (is_detached) {
 		pthread_attr_setdetachstate(&sa, PTHREAD_CREATE_DETACHED);

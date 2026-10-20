@@ -3945,6 +3945,7 @@ static query *query_create_(module *m, bool is_toplevel)
 		return NULL;
 
 	q->parser_m = m;
+	q->depth_limit = g_max_depth;
 
 	q->pl = m->pl;
 	acquire_lock(&q->pl->live_guard);
@@ -4058,6 +4059,7 @@ query *query_create_threaded(module *m)
 		return NULL;
 
 	t->is_thread = true;
+	t->depth_limit = THREAD_STACK_SIZE / 1024;	// made here but run on the new thread's stack
 	return t;
 }
 

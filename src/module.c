@@ -1397,6 +1397,7 @@ void set_meta_predicate_in_db(module *m, cell *c)
 		query q = (query){0};
 		q.pl = m->pl;
 		q.st.m = m;
+		q.depth_limit = g_max_depth;
 		char *dst = print_canonical_to_strbuf(&q, c, 0, 0);
 		ENSURE(dst);
 		char tmpbuf[1024];
@@ -3687,6 +3688,7 @@ static void module_save_fp(module *m, FILE *fp, int canonical, int dq)
 	query q = (query){0};
 	q.pl = m->pl;
 	q.st.m = m;
+	q.depth_limit = g_max_depth;
 
 	for (predicate *pr = list_front(&m->predicates);
 		pr; pr = list_next(pr)) {

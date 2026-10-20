@@ -1097,6 +1097,8 @@ struct query_ {
 	uint64_t time_cpu_last_started, future;
 	unsigned max_depth, max_eval_depth, print_idx, tab_idx, dump_var_num;
 	unsigned name_idx;		// next free generated-name number, see get_slot_name()
+	unsigned depth_limit;	// g_max_depth for the stack it runs on, copied as reading a thread local costs a call on macOS
+	uintptr_t eval_floor;	// how far down the stack the current is/2 or comparison may go (DEBUG builds)
 	pl_idx *tab1, *tab2;
 	unsigned tabs_alloc;
 	unsigned varno, tab0_varno, cur_engine, cur_chan, my_chan;
@@ -1514,7 +1516,9 @@ size_t sprint_int(char *dst, size_t size, pl_int n, int base);
 int format_integer(char *dst, cell *c, int grouping, int sep, int decimals, int radix);
 const char *dump_key(const void *k, const void *v, const void *p);
 
-extern unsigned g_max_depth;
+extern pl_thread_local unsigned g_max_depth;
+
+#define THREAD_STACK_SIZE (8 * 1024 * 1024)
 
 #define slicecmp2(s1,l1,s2) slicecmp(s1,l1,s2,strlen(s2))
 

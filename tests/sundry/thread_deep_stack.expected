@@ -1,0 +1,8 @@
+main write: ok
+main is: ok
+thread write: ok
+thread is: ok
+thread exit: true
+engine write: ok
+engine is: ok
+engine exit: true

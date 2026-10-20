@@ -1541,6 +1541,7 @@ static bool directive_term(parser *p, cell *c)
 		query q = (query){0};
 		q.pl = p->pl;
 		q.st.m = p->m;
+		q.depth_limit = g_max_depth;
 		char *dst;
 
 		// Argument by argument, so an operator name doesn't print infix.

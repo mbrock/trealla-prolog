@@ -297,6 +297,25 @@ static mp_result mp_rat_divx(mp_rat a, mp_rat b, mp_rat q)
 	return mp_rat_div(a, b, q);
 }
 
+// Arithmetic recurses through here: stop at the depth limit, or at half the stack in the -O0 builds (all DEBUG), whose frames reach that far sooner
+static bool eval_too_deep(query *q)
+{
+#ifdef DEBUG
+	if ((uintptr_t)__builtin_frame_address(0) < q->eval_floor)
+		return true;
+#endif
+	return q->max_eval_depth++ > q->depth_limit;
+}
+
+static void start_eval(query *q)
+{
+	q->max_eval_depth = 0;
+#ifdef DEBUG
+	uintptr_t base = (uintptr_t)__builtin_frame_address(0), budget = (uintptr_t)q->depth_limit * 512;
+	q->eval_floor = base > budget ? base - budget : 0;
+#endif
+}
+
 bool call_builtin(query *q, cell *c, pl_ctx c_ctx)
 {
 	cell *save = q->st.instr;
@@ -313,7 +332,7 @@ bool call_builtin(query *q, cell *c, pl_ctx c_ctx)
 #endif
 	if (!c->bif_ptr->evaluable && (c->val_off != g_float_s))
 		return throw_error(q, c, q->st.cur_ctx, "type_error", "evaluable");
-	else if (q->max_eval_depth++ > g_max_depth)
+	else if (eval_too_deep(q))
 		return throw_error(q, q->st.instr, q->st.cur_ctx, "type_error", "evaluable");
 	else
 		c->bif_ptr->fn(q);
@@ -337,7 +356,7 @@ static bool bif_iso_is_2(query *q)
 {
 	GET_FIRST_ARG(p1,any);
 	GET_NEXT_ARG(p2_tmp,any);
-	q->max_eval_depth = 0;
+	start_eval(q);
 	CLEANUP cell p2 = eval(q, p2_tmp);
 	p2.num_cells = 1;
 
@@ -2674,7 +2693,7 @@ static bool bif_iso_numeric_eq_2(query *q)
 {
 	GET_FIRST_ARG(p1_tmp,any);
 	GET_NEXT_ARG(p2_tmp,any);
-	q->max_eval_depth = 0;
+	start_eval(q);
 	CLEANUP cell p1 = eval(q, p1_tmp);
 	CLEANUP cell p2 = eval(q, p2_tmp);
 	COMPARE_OP(==,p1,p2);
@@ -2685,7 +2704,7 @@ static bool bif_iso_numeric_ne_2(query *q)
 {
 	GET_FIRST_ARG(p1_tmp,any);
 	GET_NEXT_ARG(p2_tmp,any);
-	q->max_eval_depth = 0;
+	start_eval(q);
 	CLEANUP cell p1 = eval(q, p1_tmp);
 	CLEANUP cell p2 = eval(q, p2_tmp);
 	COMPARE_OP(!=,p1,p2);
@@ -2696,7 +2715,7 @@ static bool bif_iso_numeric_ge_2(query *q)
 {
 	GET_FIRST_ARG(p1_tmp,any);
 	GET_NEXT_ARG(p2_tmp,any);
-	q->max_eval_depth = 0;
+	start_eval(q);
 	CLEANUP cell p1 = eval(q, p1_tmp);
 	CLEANUP cell p2 = eval(q, p2_tmp);
 	COMPARE_OP(>=,p1,p2);
@@ -2707,7 +2726,7 @@ static bool bif_iso_numeric_gt_2(query *q)
 {
 	GET_FIRST_ARG(p1_tmp,any);
 	GET_NEXT_ARG(p2_tmp,any);
-	q->max_eval_depth = 0;
+	start_eval(q);
 	CLEANUP cell p1 = eval(q, p1_tmp);
 	CLEANUP cell p2 = eval(q, p2_tmp);
 	COMPARE_OP(>,p1,p2);
@@ -2718,7 +2737,7 @@ static bool bif_iso_numeric_le_2(query *q)
 {
 	GET_FIRST_ARG(p1_tmp,any);
 	GET_NEXT_ARG(p2_tmp,any);
-	q->max_eval_depth = 0;
+	start_eval(q);
 	CLEANUP cell p1 = eval(q, p1_tmp);
 	CLEANUP cell p2 = eval(q, p2_tmp);
 	COMPARE_OP(<=,p1,p2);
@@ -2729,7 +2748,7 @@ static bool bif_iso_numeric_lt_2(query *q)
 {
 	GET_FIRST_ARG(p1_tmp,any);
 	GET_NEXT_ARG(p2_tmp,any);
-	q->max_eval_depth = 0;
+	start_eval(q);
 	CLEANUP cell p1 = eval(q, p1_tmp);
 	CLEANUP cell p2 = eval(q, p2_tmp);
 	COMPARE_OP(<,p1,p2);

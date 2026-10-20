@@ -2278,18 +2278,18 @@ static bool print_chars_quoted(query *q, cell *c, pl_ctx c_ctx, int running, uns
 // Where the outermost print_to_sb() began on this thread's stack
 static pl_thread_local char *g_print_base;
 
-// The writer recurses: stop at g_max_depth or half the stack, which -O0 and ASan frames reach far sooner
-static bool print_too_deep(unsigned depth)
+// The writer recurses: stop at the depth limit or half the stack, which -O0 and ASan frames reach far sooner
+static bool print_too_deep(query *q, unsigned depth)
 {
 	uintptr_t base = (uintptr_t)g_print_base, here = (uintptr_t)__builtin_frame_address(0);
-	return (depth > g_max_depth) || ((here < base) && ((base - here) / 512 > g_max_depth));
+	return (depth > q->depth_limit) || ((here < base) && ((base - here) / 512 > q->depth_limit));
 }
 
 static bool print_term_dispatch(query *q, cell *c, pl_ctx c_ctx, int running, int cons, unsigned depth, visit *visited)
 {
 	/* ISO/Cor.3 7.10.5 write_term decision tree (plus Trealla specials). */
 
-	if (print_too_deep(depth)) {
+	if (print_too_deep(q, depth)) {
 		emit(q, "...");
 		q->cycle_error = q->print_cut = true;
 		q->last_thing = WAS_OTHER;
