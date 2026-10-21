@@ -1774,15 +1774,17 @@ static bool directive_term(parser *p, cell *c)
 		} else
 			name = C_STR(p, p1);
 
-		if (!p->m->make) {
-			module *tmp_m;
+		module *tmp_m = find_module(p->pl, name);
 
-			if ((tmp_m = find_module(p->pl, name)) != NULL) {
-				p->already_loaded_error = true;
-				p->m = tmp_m;
-				return true;
-			}
-
+		if (tmp_m && p->m->make) {
+			// make/0 reloads into the module the file defines, dropping what the old copy put there
+			unload_file(tmp_m, loading_base(p->m));
+			p->m = tmp_m;
+		} else if (tmp_m) {
+			p->already_loaded_error = true;
+			p->m = tmp_m;
+			return true;
+		} else {
 			tmp_m = module_create(p->pl, name);
 			if (tmp_m) tmp_m->from_file = true;
 

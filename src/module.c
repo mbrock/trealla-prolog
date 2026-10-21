@@ -157,6 +157,7 @@ static const char *set_loaded(module *m, const char *filename, const char *orig_
 
 	while (ptr) {
 		if (!strcmp(ptr->filename, filename)) {
+			ptr->when_loaded = time(0);		// a reload, or make/0 sees it as changed ever after
 			ptr->is_loaded = true;
 			return ptr->filename;
 		}

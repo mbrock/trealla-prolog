@@ -1,0 +1,10 @@
+loaded-[1]-[a,b]-[1]
+unchanged-[1]-[a,b]-[1]
+% tmp_make_m.pl changed
+module_edited-[1]-[c]-[1]
+again-[1]-[c]-[1]
+% tmp_make_inc.pl changed
+include_edited-[1]-[c]-[2]
+% tmp_make_top.pl changed
+top_edited-[2]-[c]-[2]
+again-[2]-[c]-[2]
