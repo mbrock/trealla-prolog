@@ -543,6 +543,13 @@ static void add_stream_properties(query *q, int n)
 		dst += snprintf(dst, sizeof(tmpbuf)-strlen(tmpbuf), "'$stream_property'(%d, end_of_stream(%s)).\n", n, str->at_end_of_file ? "past" : at_end_of_file ? "at" : "not");
 		dst += snprintf(dst, sizeof(tmpbuf)-strlen(tmpbuf), "'$stream_property'(%d, eof_action(%s)).\n", n, str->eof_action == eof_action_eof_code ? "eof_code" : str->eof_action == eof_action_error ? "error" : str->eof_action == eof_action_reset ? "reset" : "none");
 
+		// Seconds as SWI gives them, written digit by digit so no locale's decimal comma gets in.
+
+		if (str->timeout_ms < 0)
+			dst += snprintf(dst, sizeof(tmpbuf)-strlen(tmpbuf), "'$stream_property'(%d, timeout(infinite)).\n", n);
+		else
+			dst += snprintf(dst, sizeof(tmpbuf)-strlen(tmpbuf), "'$stream_property'(%d, timeout(%d.%03d)).\n", n, str->timeout_ms / 1000, str->timeout_ms % 1000);
+
 		if (!str->binary) {
 			dst += snprintf(dst, sizeof(tmpbuf)-strlen(tmpbuf), "'$stream_property'(%d, bom(%s)).\n", n, str->bom ? "true" : "false");
 			dst += snprintf(dst, sizeof(tmpbuf)-strlen(tmpbuf), "'$stream_property'(%d, encoding('%s')).\n", n, "UTF-8");
@@ -692,6 +699,17 @@ static bool do_stream_property(query *q)
 		return unify(q, c, c_ctx, &tmp, q->st.cur_ctx);
 	}
 
+	if (!CMP_STRING_TO_CSTR(q, p1, "timeout") && (get_arity(p1) == 1)) {
+		cell tmp;
+
+		if (str->timeout_ms < 0)
+			make_atom(&tmp, new_atom(q->pl, "infinite"));
+		else
+			make_float(&tmp, str->timeout_ms / 1000.0);
+
+		return unify(q, c, c_ctx, &tmp, q->st.cur_ctx);
+	}
+
 	if (!CMP_STRING_TO_CSTR(q, p1, "input"))
 		return !strcmp(str->mode, "read");
 
@@ -799,7 +817,7 @@ static void clear_streams_properties(query *q)
 static const char *s_properties =
 	"alias,file_name,mode,encoding,type,line_count,"			\
 	"position,reposition,end_of_stream,eof_action,"				\
-	"input,output,newline,engine,skiplist";
+	"input,output,newline,engine,skiplist,timeout";
 
 static bool bif_iso_stream_property_2(query *q)
 {

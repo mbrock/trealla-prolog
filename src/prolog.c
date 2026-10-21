@@ -1234,6 +1234,7 @@ prolog *pl_create()
 	CHECK_SENTINEL(pl->streams[0].mode = TPL_strdup("read"), NULL);
 	sl_app(pl->streams[0].alias, TPL_strdup("user_input"), NULL);
 	pl->streams[0].eof_action = eof_action_reset;
+	pl->streams[0].timeout_ms = -1;
 
 	pl->streams[1].fp_in = stdout;
 	pl->streams[1].fp_out = stdout;
@@ -1242,6 +1243,7 @@ prolog *pl_create()
 	CHECK_SENTINEL(pl->streams[1].mode = TPL_strdup("append"), NULL);
 	sl_app(pl->streams[1].alias, TPL_strdup("user_output"), NULL);
 	pl->streams[1].eof_action = eof_action_reset;
+	pl->streams[1].timeout_ms = -1;
 
 	pl->streams[2].fp_in = stderr;
 	pl->streams[2].fp_out = stderr;
@@ -1250,6 +1252,7 @@ prolog *pl_create()
 	CHECK_SENTINEL(pl->streams[2].mode = TPL_strdup("append"), NULL);
 	sl_app(pl->streams[2].alias, TPL_strdup("user_error"), NULL);
 	pl->streams[2].eof_action = eof_action_reset;
+	pl->streams[2].timeout_ms = -1;
 
 	init_lock(&pl->guard);
 	init_lock(&pl->live_guard);

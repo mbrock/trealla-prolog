@@ -64,6 +64,20 @@ recover(Srv) :-
 	format("recover: ~w ~w ~w~n", [O1, O2, O3]),
 	close(S), close(SS).
 
+% stream_property/2 gives the timeout in seconds, or infinite for none,
+% as SWI does, whether the stream is given or enumerated.
+
+props(Srv) :-
+	quiet_pair(Srv, S, SS),
+	findall(T, stream_property(S, timeout(T)), T0),
+	findall(T, (member(V, [0.2, 0, -1, 1.0e12, infinite]), set_stream(S, timeout(V)), stream_property(S, timeout(T))), Ts),
+	set_stream(S, timeout(1r5)),
+	findall(S1, stream_property(S1, timeout(0.2)), Ss),
+	(Ss == [S] -> Found = found ; Found = Ss),
+	stream_property(user_input, timeout(U)),
+	format("props: ~w ~w ~w ~w~n", [T0, Ts, Found, U]),
+	close(S), close(SS).
+
 silent_http :-
 	tcp_socket(Srv), tcp_bind(Srv, '127.0.0.1':3438), tcp_listen(Srv, 5),
 	tcp_accept(Srv, Cl, _),
@@ -93,6 +107,7 @@ main :-
 	t(Srv, alarm_first, silent, S8, (set_stream(S8, timeout(5)), call_with_time_limit(0.2, getline(S8, _)))),
 	t(Srv, infinite, silent, S9, (set_stream(S9, timeout(infinite)), call_with_time_limit(0.2, getline(S9, _)))),
 	recover(Srv),
+	props(Srv),
 	tcp_close_socket(Srv),
 	thread_create(silent_http, T, []),
 	sleep(0.1),

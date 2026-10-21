@@ -17,4 +17,5 @@ second_timeout: timeout_error fast
 alarm_first: time_limit_exceeded fast
 infinite: time_limit_exceeded fast
 recover: timeout_error error(syntax_error(operator_expected),read_term/3) success
+props: [infinite] [0.2,0.0,0.0,2147483.647,infinite] found infinite
 http_open: timeout_error fast
