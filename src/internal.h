@@ -1352,6 +1352,7 @@ struct prolog_ {
 	skiplist *biftab, *help, *fortab, *alias;
 	skiplist *flagtab;					// flag/3 values, keyed by flag_key()
 	uint8_t op_names[OP_NAMES_BYTES];	// see note_op_name()
+	pl_idx rebase_names[MAX_VARS];		// see rebase_var()
 	lock guard;
 	lock live_guard;					// live_queries, every query's adopted and retained
 	query *live_queries;

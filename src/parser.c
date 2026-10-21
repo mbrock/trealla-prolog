@@ -2517,6 +2517,29 @@ static unsigned get_in_body(parser *p, const char *name)
 	return 0;
 }
 
+// A ref's val_off is its context, not a name, so give it a real one: goal_expansion_() prints and reparses the var by name (#1175).
+// The atoms are cached per instance, as new_atom() takes the global symtab lock and assert is hot.
+
+static bool rebase_var(parser *p, cell *c, bool in_body)
+{
+	char tmpbuf[20];
+	snprintf(tmpbuf, sizeof(tmpbuf), "___V%u", c->var_num);
+	pl_idx *cache = c->var_num < MAX_VARS ? &p->pl->rebase_names[c->var_num] : NULL;
+	pl_idx off = cache ? __atomic_load_n(cache, __ATOMIC_RELAXED) : 0;
+
+	if (!off && ((off = new_atom(p->pl, tmpbuf)) != ERR_IDX) && cache)
+		__atomic_store_n(cache, off, __ATOMIC_RELAXED);
+
+	if (off == ERR_IDX) {
+		p->error = true;
+		return false;
+	}
+
+	c->var_num = get_varno(p, tmpbuf, in_body, c->var_num);
+	c->val_off = off;
+	return true;
+}
+
 void assign_vars(parser *p, unsigned start, bool rebase)
 {
 	if (!p || p->error)
@@ -2550,9 +2573,8 @@ void assign_vars(parser *p, unsigned start, bool rebase)
 			continue;
 
 		if (rebase) {
-			char tmpbuf[20];
-			snprintf(tmpbuf, sizeof(tmpbuf), "___V%u", c->var_num);
-			c->var_num = get_varno(p, tmpbuf, in_body, c->var_num);
+			if (!rebase_var(p, c, in_body))
+				return;
 		} else
 			c->var_num = get_varno(p, C_STR(p, c), in_body, c->var_num);
 
@@ -2586,9 +2608,8 @@ void assign_vars(parser *p, unsigned start, bool rebase)
 			continue;
 
 		if (rebase) {
-			char tmpbuf[20];
-			snprintf(tmpbuf, sizeof(tmpbuf), "___V%u", c->var_num);
-			c->var_num = get_varno(p, tmpbuf, in_body, c->var_num);
+			if (!rebase_var(p, c, in_body))
+				return;
 		} else
 			c->var_num = get_varno(p, C_STR(p, c), in_body, c->var_num);
 
@@ -3345,20 +3366,29 @@ static cell *goal_expansion_(parser *p, cell *goal)
 	// vartab from the main parser... IS THIS TRUE?
 
 	//printf("+++ goal_expansion %s/%u\n", C_STR(p, goal), get_arity(goal));
-	p->pl->in_goal_expansion = true;
 	const unsigned num_vars_before = p->cl->num_vars;
 	parser *p2 = parser_create(exp_m);
-	check_error(p2, query_destroy(q));
+
+	if (!p2 || !vartab_copy(p2, p)) {
+		parser_destroy(p2);
+		query_destroy(q);
+		p->error = true;
+		SB_free(s);
+		return goal;
+	}
+
 	q->top = p2;
 	p2->cl->num_vars = p->cl->num_vars;
-	if (!vartab_copy(p2, p)) { p->error = true; }
 	p2->reuse = true;
 	p2->line_num = p->line_num;
 	p2->skip = true;
 	p2->srcptr = SB_cstr(s);
+	p->pl->in_goal_expansion = true;
 	tokenize(p2, false, false);
 
 	if (p2->error) {
+		p->pl->in_goal_expansion = false;
+		p->error_desc = p2->error_desc;
 		parser_destroy(p2);
 		query_destroy(q);
 		p->error = true;
@@ -3403,8 +3433,10 @@ static cell *goal_expansion_(parser *p, cell *goal)
 
 		slot *e = get_slot(q, f, i);
 
-		if (is_empty(&e->c))
+		if (is_empty(&e->c)) {
+			p->error_desc = "instantiation_error";	// the hook left its output unbound
 			continue;
+		}
 
 		cell *c = deref(q, &e->c, e->c.val_ctx);
 
@@ -3442,6 +3474,7 @@ static cell *goal_expansion_(parser *p, cell *goal)
 	}
 
 	if (p2->error) {
+		p->error_desc = p2->error_desc;
 		parser_destroy(p2);
 		query_destroy(q);
 		p->error = true;

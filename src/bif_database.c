@@ -673,6 +673,25 @@ static cell *get_db_head(cell *head)
 	return head;
 }
 
+// Goal expansion failed while compiling the clause: raise rather than store it half-expanded (#1175).
+
+static bool throw_expansion_error(query *q, parser *p, cell *tmp)
+{
+	const char *desc = p->error_desc;
+	parser_destroy(p);
+
+	if (!desc)
+		return throw_error(q, tmp, q->st.cur_ctx, "resource_error", "memory");
+
+	if (!strcmp(desc, "instantiation_error"))
+		return throw_error(q, tmp, q->st.cur_ctx, "instantiation_error", "args_not_sufficiently_instantiated");
+
+	if (!strcmp(desc, "goal_expansion_limit"))
+		return throw_error(q, tmp, q->st.cur_ctx, "resource_error", desc);
+
+	return throw_error(q, tmp, q->st.cur_ctx, "syntax_error", desc);
+}
+
 static bool bif_iso_asserta_1(query *q)
 {
 	GET_FIRST_ARG(p1,callable);
@@ -736,6 +755,10 @@ static bool bif_iso_asserta_1(query *q)
 	}
 
 	term_to_body(p);
+
+	if (p->error)
+		return throw_expansion_error(q, p, tmp);
+
 	cell *h = get_head(p->cl->cells);
 
 	prolog_lock_mod(q->pl, q->st.m);
@@ -822,6 +845,10 @@ static bool do_assertz_1(query *q)
 	}
 
 	term_to_body(p);
+
+	if (p->error)
+		return throw_expansion_error(q, p, tmp);
+
 	cell *h = get_head(p->cl->cells);
 
 	prolog_lock_mod(q->pl, q->st.m);
@@ -920,6 +947,10 @@ static bool do_asserta_2(query *q)
 	}
 
 	term_to_body(p);
+
+	if (p->error)
+		return throw_expansion_error(q, p, tmp);
+
 	cell *h = get_head(p->cl->cells);
 
 	prolog_lock_mod(q->pl, q->st.m);
@@ -1027,6 +1058,10 @@ static bool do_assertz_2(query *q)
 	}
 
 	term_to_body(p);
+
+	if (p->error)
+		return throw_expansion_error(q, p, tmp);
+
 	cell *h = get_head(p->cl->cells);
 
 	prolog_lock_mod(q->pl, q->st.m);
