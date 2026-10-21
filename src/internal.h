@@ -740,16 +740,12 @@ struct slot_page_ {
 
 enum { eof_action_eof_code, eof_action_error, eof_action_reset };
 
-// with_output_to/2 captures what a goal writes to a stream in a buffer
-// of its own, kept on the query that began it rather than on the stream:
-// another thread or task writing the same stream meanwhile is not its
-// goal's output. Captures nest, innermost first, and an inner one's text
-// never reaches the one around it. They form a stack because
-// setup_call_cleanup/3 makes the pairing last-in-first-out.
+// A with_output_to/2 buffer, on the query that began it so other threads' and tasks' writes stay out (#1174).
 
 struct capture_ {
 	capture *prev;
 	stream *str;
+	unsigned gen;						// str's, so a slot closed and reopened is not captured
 	stringbuf sb_buf;
 };
 
@@ -790,6 +786,7 @@ struct stream_ {
 	size_t data_len, alloc_nbytes, wbuf_len, wbuf_pos;
 	size_t str_pos;						// an open_string/2 stream's read offset into sb
 	int ungetch, srclen, chan, idx, port;
+	unsigned gen;						// bumped each time the slot is opened, see stream_write()
 	unsigned rows, cols;
 	uint8_t level, eof_action;
 	pl_atomic bool is_closing;			// set before a socket's shutdown, for an accept it wakes
@@ -1063,7 +1060,8 @@ struct query_ {
 	mpq_t tmp_irat;
 	run_state st;
 	stringbuf sb_buf;
-	capture *captures;					// with_output_to/2's, see capture_owner()
+	capture *captures;					// with_output_to/2's begun here, innermost first
+	query *out_of;						// whose captures its writes fall through to, see stream_write()
 
 	// Name numbers already spoken for by variables the user wrote as _A,
 	// _B1 and so on, so a generated name never collides with a source

@@ -3466,7 +3466,20 @@ static bool consultall(query *q, cell *l, pl_ctx l_ctx)
 	return true;
 }
 
+static pl_thread_local query *g_running;	// what start() is running on this thread, see query_create_()
+
+static bool start_(query *q);
+
 bool start(query *q)
+{
+	query *save = g_running;
+	g_running = q;
+	bool ok = start_(q);
+	g_running = save;
+	return ok;
+}
+
+static bool start_(query *q)
 {
 	q->yielded = false;
 	bool done = false;
@@ -3947,6 +3960,7 @@ static query *query_create_(module *m, bool is_toplevel)
 
 	q->parser_m = m;
 	q->depth_limit = g_max_depth;
+	q->out_of = g_running;				// a directive's or an expansion's writes are its caller's output
 
 	q->pl = m->pl;
 	acquire_lock(&q->pl->live_guard);
@@ -4061,6 +4075,7 @@ query *query_create_threaded(module *m)
 
 	t->is_thread = true;
 	t->depth_limit = THREAD_STACK_SIZE / 1024;	// made here but run on the new thread's stack
+	t->out_of = NULL;					// and its output is its own
 	return t;
 }
 
@@ -4069,6 +4084,7 @@ query *query_create_subquery(query *q, cell *instr)
 	query *subq = query_create_(q->st.m, false);
 	if (!subq) return NULL;
 	subq->parent = q;
+	subq->out_of = q;
 	subq->thread_ptr = q->thread_ptr;
 	subq->st.fp = 1;
 	subq->top = q->top;
@@ -4111,6 +4127,7 @@ query *query_create_task_rebased(query *q, cell *instr, unsigned num_vars)
 	query *subq = query_create_(q->st.m, false);
 	if (!subq) return NULL;
 	subq->parent = q;
+	subq->out_of = q;
 
 	// Inherit the thread: a task belongs to the run queue of whichever
 	// thread object spawned it, not to the main thread's.

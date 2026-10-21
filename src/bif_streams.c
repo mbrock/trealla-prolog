@@ -445,6 +445,7 @@ int new_stream(prolog *pl)
 		str->invalid_pending = false;
 		str->fp = str->fp_in = str->fp_out = NULL;
 		str->is_active = true;
+		str->gen++;
 		prolog_unlock(pl);
 		return i;
 	}
@@ -6887,26 +6888,16 @@ static bool bif_sys_put_chars_2(query *q)
 	return true;
 }
 
-// The query whose captures q's writes go to. A subquery run from C for
-// a moment, as portray/1 is, writes for its caller; a task or a thread
-// is a query of its own, and an engine has no parent.
-
-static query *capture_owner(query *q)
-{
-	while (q->parent && !q->is_task)
-		q = q->parent;
-
-	return q;
-}
-
-// Write to str, or into the innermost of this query's captures of it.
+// Write to str, or into the innermost capture of it on q or whoever q writes for, see out_of.
 
 size_t stream_write(query *q, const void *ptr, size_t nbytes, stream *str)
 {
-	for (capture *c = capture_owner(q)->captures; c; c = c->prev) {
-		if (c->str == str) {
-			SB_fwrite(c->sb, ptr, nbytes);
-			return nbytes;
+	for (; q; q = q->out_of) {
+		for (capture *c = q->captures; c; c = c->prev) {
+			if ((c->str == str) && (c->gen == str->gen)) {
+				SB_fwrite(c->sb, ptr, nbytes);
+				return nbytes;
+			}
 		}
 	}
 
@@ -6920,24 +6911,22 @@ static bool begin_capture(query *q, stream *str)
 	if (!c)
 		return throw_error(q, q->st.instr, q->st.cur_ctx, "resource_error", "memory");
 
-	query *owner = capture_owner(q);
 	c->str = str;
+	c->gen = str->gen;
 	SB_init(c->sb);
-	c->prev = owner->captures;
-	owner->captures = c;
+	c->prev = q->captures;
+	q->captures = c;
 	return true;
 }
 
-// Unlink the innermost capture, NULL when unpaired. The stream it was
-// begun on need not be current now: the goal may have changed that.
+// The innermost capture, unlinked, or NULL when unpaired; the goal may have changed current output since.
 
 static capture *pop_capture(query *q)
 {
-	query *owner = capture_owner(q);
-	capture *c = owner->captures;
+	capture *c = q->captures;
 
 	if (c)
-		owner->captures = c->prev;
+		q->captures = c->prev;
 
 	return c;
 }
@@ -6952,16 +6941,11 @@ static void free_capture(capture *c)
 
 void free_captures(query *q)
 {
-	while (q->captures) {
-		capture *c = q->captures;
-		q->captures = c->prev;
-		free_capture(c);
-	}
+	while (q->captures)
+		free_capture(pop_capture(q));
 }
 
-// End the innermost capture and unify what it caught. As characters,
-// nothing is the empty list, not the empty atom: make_stringn() maps a
-// zero length to '', which is what the atom wants but not a list.
+// End the innermost capture and unify its text: as characters, none is [] where make_stringn() would give ''.
 
 static bool end_capture(query *q, cell *p1, pl_ctx p1_ctx, bool as_chars)
 {
@@ -6995,13 +6979,20 @@ static bool bif_sys_capture_output_0(query *q)
 	return begin_capture(q, &q->pl->streams[q->pl->current_output]);
 }
 
-static bool bif_sys_capture_output_to_chars_1(query *q)
+static bool bif_sys_capture_error_0(query *q)
+{
+	return begin_capture(q, &q->pl->streams[q->pl->current_error]);
+}
+
+// Ending a capture takes the innermost whichever stream it is on, so output and error share these.
+
+static bool bif_sys_capture_to_chars_1(query *q)
 {
 	GET_FIRST_ARG(p1,var);
 	return end_capture(q, p1, p1_ctx, true);
 }
 
-static bool bif_sys_capture_output_to_atom_1(query *q)
+static bool bif_sys_capture_to_atom_1(query *q)
 {
 	GET_FIRST_ARG(p1,var);
 	return end_capture(q, p1, p1_ctx, false);
@@ -7034,6 +7025,10 @@ char *portray_term_to_strbuf(query *q, cell *c, pl_ctx c_ctx)
 	}
 
 	capture *cap = pop_capture(q);
+
+	if (!cap)
+		return NULL;
+
 	size_t len = SB_strlen(cap->sb);
 	char *dst = q2 ? TPL_malloc(len+1) : NULL;
 
@@ -7045,23 +7040,6 @@ char *portray_term_to_strbuf(query *q, cell *c, pl_ctx c_ctx)
 
 	free_capture(cap);
 	return dst;
-}
-
-static bool bif_sys_capture_error_0(query *q)
-{
-	return begin_capture(q, &q->pl->streams[q->pl->current_error]);
-}
-
-static bool bif_sys_capture_error_to_chars_1(query *q)
-{
-	GET_FIRST_ARG(p1,var);
-	return end_capture(q, p1, p1_ctx, true);
-}
-
-static bool bif_sys_capture_error_to_atom_1(query *q)
-{
-	GET_FIRST_ARG(p1,var);
-	return end_capture(q, p1, p1_ctx, false);
 }
 
 typedef struct {
@@ -7628,11 +7606,11 @@ builtins g_streams_bifs[] =
 	{"$stream_to_file", 2, bif_sys_stream_to_file_2, "+stream,-integer", false, false, BLAH},
 #endif
 	{"$capture_output", 0, bif_sys_capture_output_0, NULL, false, false, BLAH},
-	{"$capture_output_to_chars", 1, bif_sys_capture_output_to_chars_1, "-string", false, false, BLAH},
-	{"$capture_output_to_atom", 1, bif_sys_capture_output_to_atom_1, "-atom", false, false, BLAH},
+	{"$capture_output_to_chars", 1, bif_sys_capture_to_chars_1, "-string", false, false, BLAH},
+	{"$capture_output_to_atom", 1, bif_sys_capture_to_atom_1, "-atom", false, false, BLAH},
 	{"$capture_error", 0, bif_sys_capture_error_0, NULL, false, false, BLAH},
-	{"$capture_error_to_chars", 1, bif_sys_capture_error_to_chars_1, "-string", false, false, BLAH},
-	{"$capture_error_to_atom", 1, bif_sys_capture_error_to_atom_1, "-atom", false, false, BLAH},
+	{"$capture_error_to_chars", 1, bif_sys_capture_to_chars_1, "-string", false, false, BLAH},
+	{"$capture_error_to_atom", 1, bif_sys_capture_to_atom_1, "-atom", false, false, BLAH},
 	{"$readline", 2, bif_sys_readline_2, "+string,-string", false, false, BLAH},
 	{"$get_chars", 3, bif_sys_get_chars_3, "+stream,+integer,-string", false, false, BLAH},
 	{"$bread", 3, bif_sys_bread_3, "+stream,+integer,-string", false, false, BLAH},

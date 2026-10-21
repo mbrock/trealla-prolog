@@ -123,6 +123,7 @@ static bool bif_engine_create_4(query *q)
 	CHECKED(str->engine);
 	str->engine->cur_engine = n;
 	str->engine->is_engine = true;
+	str->engine->out_of = NULL;			// its output is its own, as in SWI
 	str->engine->trace = q->trace;
 
 	// A context is a frame index, meaningless in the engine: clone the call whole and number its variables from 0 for the engine's frame 0.

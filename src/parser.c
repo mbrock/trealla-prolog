@@ -6299,6 +6299,7 @@ bool run(parser *p, const char *prolog_src, bool dump, query **subq, unsigned in
 		if (subq) {
 			*subq = q;
 			q->owns_top = true;
+			q->out_of = NULL;			// it outlives whatever is running now
 		}
 
 		if (yield_time_in_ms > 0)
