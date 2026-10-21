@@ -455,7 +455,8 @@ static predicate *revive_abolished(module *m, const cell *c)
 	pr->is_meta_predicate = pr->is_multifile = pr->is_discontiguous = false;
 	pr->needs_index = pr->no_idx3 = pr->is_check_directive = pr->is_processed = false;
 	pr->is_var_in_head = pr->is_var_in_first_arg = pr->is_open_first_arg = pr->is_var_in_idx2_arg = false;
-	pr->is_iso = pr->is_dirty = pr->is_incremental = pr->sig_chosen = pr->sig_custom = pr->is_static_noted = false;
+	pr->is_iso = pr->is_dirty = pr->is_incremental = pr->sig_custom = pr->is_static_noted = false;
+	pr->sig_chosen = false;
 	pr->is_revived = is_revived;
 	pr->filename = m->filename;
 	pr->is_noindex = m->pl->noindex || !get_arity(&pr->key);
@@ -2917,7 +2918,8 @@ void index_free(predicate *pr)
 	sl_destroy(pr->ovf1);
 	sl_destroy(pr->ovf2);
 	sl_destroy(pr->idx3);
-	pr->idx1 = pr->idx2 = pr->idx3 = pr->ovf1 = pr->ovf2 = NULL;
+	sl_destroy(pr->idx3_old);
+	pr->idx1 = pr->idx2 = pr->idx3 = pr->idx3_old = pr->ovf1 = pr->ovf2 = NULL;
 }
 
 void build_predicate_index(predicate *pr)
@@ -3070,7 +3072,11 @@ static void assert_commit(module *m, rule *r, predicate *pr, bool append)
 	// does not come back: the shape it answers no longer holds for this predicate.
 
 	if (pr->idx3 && (key_unorderable(k1) || (pr->idx2_arg && key_unorderable(get_nth_arg(c, pr->idx2_arg))))) {
-		sl_destroy(pr->idx3);
+		if (pr->refcnt)
+			pr->idx3_old = pr->idx3;	// a reader inside may be iterating it
+		else
+			sl_destroy(pr->idx3);
+
 		pr->idx3 = NULL;
 		pr->no_idx3 = true;
 	}

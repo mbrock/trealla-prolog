@@ -1112,12 +1112,16 @@ static void touch_rule(query *q, rule *r)
 	if ((t == me) || (t == TOUCH_SHARED))
 		return;
 
-	if ((q->pl->q_cnt == 1)
-		|| (!t && touch_claim(&r->touch_qid, &t, me))) {
-		r->touch_qid = me;
-		r->touch_at = q->push_clock;
-	} else
+	// Not stored again after a claim: another thread's TOUCH_SHARED may have landed since, and must stay.
+
+	if (q->pl->q_cnt == 1)
+		touch_store(&r->touch_qid, me);
+	else if (t || !touch_claim(&r->touch_qid, &t, me)) {
 		touch_store(&r->touch_qid, TOUCH_SHARED);
+		return;
+	}
+
+	r->touch_at = q->push_clock;
 }
 
 // Where a reclaimed clause waits to be freed. If this query made the only live bindings into it, they
@@ -1258,6 +1262,8 @@ void reclaim_predicate(query *q, predicate *pr)
 {
 	pr->drain_gen = 0;
 	pr->drain_old = 0;
+	sl_destroy(pr->idx3_old);
+	pr->idx3_old = NULL;
 
 	if (!list_count(&pr->dirty) && !list_count(&pr->delinked))
 		return;

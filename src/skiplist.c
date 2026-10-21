@@ -12,10 +12,11 @@
 #define sl_atomic _Atomic
 
 // Publishing a new node into a list another thread may be descending.
-// Its key and val have to be visible before the forward pointer that
-// reveals it, which on a weak memory model is not otherwise guaranteed:
-// the store linking the node in can land before the stores that filled
-// it, and a reader then compares against an uninitialised key.
+// Its key, val and own forward pointers have to be visible before the
+// forward pointer that reveals it, which on a weak memory model is not
+// otherwise guaranteed: the store linking the node in can land before
+// the stores that filled it, and a reader then compares against an
+// uninitialised key or descends through an unset link.
 //
 // Only the writer needs a fence. A reader reaches key and val *through*
 // the forward pointer it loaded, and that address dependency orders the
@@ -229,7 +230,9 @@ bool sl_get(skiplist *l, const void *key, const void **val)
 			p = q;
 	}
 
-	if (!(q = p->forward[0]))
+	// q is the node the descent stopped at; reading p->forward[0] again could find one inserted since, before it.
+
+	if (!q)
 		return false;
 
 	if (l->cmpkey(q->key, key, l->p, &ctx) != 0)
@@ -270,15 +273,15 @@ bool sl_set(skiplist *l, const void *key, const void *val)
 	q->key = (void *)key;
 	q->val = (void*)val;
 
-	// Before any forward pointer reveals q.
+	// All of q's links before any reveals q: a reader that steps onto it at one level descends through it.
+
+	for (int i = k; i >= 0; i--)
+		q->forward[i] = update[i]->forward[i];
 
 	sl_publish_barrier();
 
-	for (; k >= 0; k--) {
-		p = update[k];
-		q->forward[k] = p->forward[k];
-		p->forward[k] = q;
-	}
+	for (; k >= 0; k--)
+		update[k]->forward[k] = q;
 
 	l->count++;
 	return true;
@@ -313,15 +316,15 @@ bool sl_app(skiplist *l, const void *key, const void *val)
 	q->key = (void *)key;
 	q->val = (void*)val;
 
-	// Before any forward pointer reveals q.
+	// All of q's links before any reveals q: a reader that steps onto it at one level descends through it.
+
+	for (int i = k; i >= 0; i--)
+		q->forward[i] = update[i]->forward[i];
 
 	sl_publish_barrier();
 
-	for (; k >= 0; k--) {
-		p = update[k];
-		q->forward[k] = p->forward[k];
-		p->forward[k] = q;
-	}
+	for (; k >= 0; k--)
+		update[k]->forward[k] = q;
 
 	l->count++;
 	return true;
@@ -552,7 +555,7 @@ sliter *sl_find_key(skiplist *l, const void *key)
 			p = q;
 	}
 
-	if (!p || !(q = p->forward[0]))
+	if (!q)								// as in sl_get(), not p->forward[0] read again
 		return false;
 
 	sliter *iter;

@@ -504,6 +504,7 @@ struct predicate_ {
 	skiplist *idx1, *idx2;				// one entry per distinct atomic key, holding its key chain (keyhead)
 	skiplist *ovf1, *ovf2;				// the other keys, one entry per clause, as idx1/idx2 were
 	skiplist *idx3;					// arg1 and idx2_arg together; built on demand, see find_key()
+	skiplist *idx3_old;					// one assert_commit() dropped with readers inside, freed by reclaim_predicate()
 	const char *filename;
 	cell *meta_args;
 	list dirty, delinked;				// retracted but still in the chain; out of the chain, not yet freed
@@ -512,6 +513,7 @@ struct predicate_ {
 	unsigned max_vars, idx2_arg;
 	unsigned idx3_want;					// lookups that would have used a composite index
 	uint8_t sig_args[3];				// the head arguments clause signatures summarise, if sig_custom
+	pl_atomic bool sig_chosen;			// choose_sig_args() has run; set unlocked on the read path, so not in the bitfield word
 	uint64_t drain_gen;					// a drain in progress: readers that entered before this generation
 	int64_t drain_old;					// and how many of them are still inside
 	bool is_reload:1;
@@ -536,7 +538,6 @@ struct predicate_ {
 	bool is_iso:1;
 	bool is_dirty:1;
 	bool is_incremental:1;
-	bool sig_chosen:1;					// choose_sig_args() has run, so sig_args no longer changes
 	bool sig_custom:1;
 	bool is_static_noted:1;				// its static property is recorded
 	uint64_t last_modified;
