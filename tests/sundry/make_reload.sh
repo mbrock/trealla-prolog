@@ -42,4 +42,4 @@ main :-
 	halt.
 EOF
 
-timeout 60 $TPL -q $DRV </dev/null 2>&1 | sed 's|^% .*/|% |'
+timeout 60 $TPL -q $DRV </dev/null 2>&1 | sed 's|^% .*[/\\]|% |'
