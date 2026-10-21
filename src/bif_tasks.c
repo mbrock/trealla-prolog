@@ -203,6 +203,10 @@ bool do_yield_on_read(query *q, stream *str)
 			str->data = NULL;
 		}
 
+		TPL_free(str->line_part);
+		str->line_part = NULL;
+		str->line_part_len = 0;
+
 		str->timed_out = true;
 		return throw_read_timeout(q, str);
 	}

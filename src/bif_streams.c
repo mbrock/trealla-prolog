@@ -1014,6 +1014,9 @@ void unwind_stream(query *q, int n)
 	str->addr = NULL;
 	TPL_free(str->data);
 	str->data = NULL;
+	TPL_free(str->line_part);
+	str->line_part = NULL;
+	str->line_part_len = 0;
 	str->is_active = false;
 }
 
@@ -1535,6 +1538,9 @@ bool stream_close(query *q, int n)
 	TPL_free(str->data);
 	str->data = NULL;
 	str->data_owner = NULL;
+	TPL_free(str->line_part);
+	str->line_part = NULL;
+	str->line_part_len = 0;
 	TPL_free(str->wbuf);
 	str->wbuf = NULL;
 	str->wbuf_owner = NULL;

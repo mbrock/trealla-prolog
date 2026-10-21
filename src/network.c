@@ -926,6 +926,73 @@ bool tpl_wait_fd_writable(query *q, int fd)
 }
 #endif
 
+// A task's line from its socket. Its scheduler, not this, waits for more
+// (see do_yield_on_read()), so a line cut short by EAGAIN is kept on the
+// stream rather than passed off as whole, and taken up again when the
+// task comes back to the read. The stream's error stays set for the
+// caller to yield on. An interrupted read reports failure, as ever.
+
+static int tpl_getline_task(char **lineptr, size_t *n, stream *str)
+{
+	FILE *fp = str->fp_in;
+	size_t pos = str->line_part_len;
+
+	if (!*lineptr || (*n < pos + 128)) {
+		char *ptr = TPL_realloc(*lineptr, pos + 128);
+		ENSURE(ptr);
+		*lineptr = ptr;
+		*n = pos + 128;
+	}
+
+	if (pos)
+		memcpy(*lineptr, str->line_part, pos);
+
+	TPL_free(str->line_part);
+	str->line_part = NULL;
+	str->line_part_len = 0;
+
+	for (;;) {
+		errno = 0;
+		int ch = fgetc(fp);
+
+		if (ch == EOF) {
+			if (errno == EINTR) {
+				clearerr(fp);
+				return EOF;
+			}
+
+			if (pos && ferror(fp) && ((errno == EAGAIN) || (errno == EWOULDBLOCK))) {
+				str->line_part = TPL_malloc(pos);
+				ENSURE(str->line_part);
+				memcpy(str->line_part, *lineptr, pos);
+				str->line_part_len = pos;
+				return EOF;
+			}
+
+			break;
+		}
+
+		if ((pos + 1) >= *n) {
+			size_t new_size = *n + (*n >> 1);
+			char *ptr = TPL_realloc(*lineptr, new_size);
+			ENSURE(ptr);
+			*lineptr = ptr;
+			*n = new_size;
+		}
+
+		(*lineptr)[pos++] = (char)ch;
+
+		if (ch == '\n')
+			break;
+	}
+
+	if (!pos)
+		return EOF;
+
+	(*lineptr)[pos] = '\0';
+	return (int)pos;
+}
+
 int tpl_getline(char **lineptr, size_t *n, query *q, stream *str)
 {
 	if (str->is_string)
@@ -992,11 +1059,10 @@ int tpl_getline(char **lineptr, size_t *n, query *q, stream *str)
 	if (str->is_socket && str->fp_out)
 		fflush(str->fp_out);
 
-	// A task's own scheduler already retries via do_yield_on_stream() when
-	// its (already non-blocking, see bif_net.c) socket comes back EAGAIN -
-	// same as always, unchanged here, EINTR included: an interrupted read
-	// reports failure rather than passing off a half-read line as whole.
-	if (q->is_task || !str->is_socket) {
+	if (q->is_task && str->is_socket)
+		return tpl_getline_task(lineptr, n, str);
+
+	if (!str->is_socket) {
 		int ok = tpl_getline_fp(lineptr, n, str->fp_in);
 
 		if (errno == EINTR) {

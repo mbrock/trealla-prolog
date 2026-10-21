@@ -1,0 +1,10 @@
+getline_2: ok
+getline_3: ok
+read_line_to_string_2: ok
+read_line_to_codes_2: ok
+read_term_2: ok
+lines_then_split: ok
+three_pieces: ok
+gaps_within_timeout: ok
+part_then_eof: ok
+timeout_drops_part: ok
