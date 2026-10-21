@@ -1296,6 +1296,7 @@ struct module_ {
 	parser *p;
 	FILE *fp;
 	const char *filename, *name, *actual_filename;
+	const char *source_filename;		// the file being read, an included one too, while loading
 	skiplist *index, *ops, *defops, *keyval;
 	skiplist *props;					// which name/arity have $predicate_property clauses
 	loaded_file *loaded_files;
@@ -1512,6 +1513,14 @@ uint64_t wall_time_in_usec(void);
 uint64_t cpu_time_in_usec(void);
 uint64_t monotonic_time_in_usec(void);
 char *relative_to(const char *basefile, const char *relfile);
+bool source_exists(const char *filename);
+
+// What a relative file name in m resolves against: the file being read, else m's own
+
+inline static const char *loading_base(const module *m)
+{
+	return m->source_filename ? m->source_filename : m->filename;
+}
 size_t sprint_int(char *dst, size_t size, pl_int n, int base);
 int format_integer(char *dst, cell *c, int grouping, int sep, int decimals, int radix);
 const char *dump_key(const void *k, const void *v, const void *p);

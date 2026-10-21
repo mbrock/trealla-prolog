@@ -491,9 +491,19 @@ static const char *last_dir_sep(const char *s)
 	return last;
 }
 
-// A name that already carries a directory is taken as given; a bare one
-// - or an explicitly upward one - is taken relative to the file doing
-// the consulting.
+static bool is_absolute_path(const char *s)
+{
+#ifdef _WIN32
+	if (isalpha((unsigned char)s[0]) && (s[1] == ':'))
+		return true;
+#endif
+
+	return is_dir_sep(*s) || (*s == '~');
+}
+
+// A relative name - bare, ./, ../ or with directories - is taken
+// relative to the file doing the consulting, as SWI and Scryer do. Like
+// SWI, a name found only relative to the working directory still loads.
 //
 // basefile is whatever realpath() handed back, and on Windows that is
 // backslash-separated. Scanning for '/' alone found no separator there
@@ -504,27 +514,25 @@ static const char *last_dir_sep(const char *s)
 
 char *relative_to(const char *basefile, const char *relfile)
 {
-	char *tmpbuf = TPL_malloc(strlen(basefile) + strlen(relfile) + 256);
+	const char *sep = basefile ? last_dir_sep(basefile) : NULL;
+	char *tmpbuf = TPL_malloc((sep ? strlen(basefile) : 0) + strlen(relfile) + 1);
 	ENSURE(tmpbuf);
 	char *ptr = tmpbuf;
-	bool upward = !strncmp(relfile, "../", 3);
 
-#ifdef _WIN32
-	upward = upward || !strncmp(relfile, "..\\", 3);
-#endif
-
-	if (upward || !last_dir_sep(relfile)) {
-		strcpy(tmpbuf, basefile);
-		const char *sep = last_dir_sep(tmpbuf);
-
+	if (sep && !is_absolute_path(relfile)) {
 		// Keep the separator the base was written with, so a Windows
 		// path stays a Windows path.
 
-		ptr = sep ? tmpbuf + (sep - tmpbuf) + 1 : tmpbuf;
-		*ptr = '\0';
+		size_t dirlen = (sep - basefile) + 1;
+		memcpy(tmpbuf, basefile, dirlen);
+		ptr = tmpbuf + dirlen;
 	}
 
 	strcpy(ptr, relfile);
+
+	if ((ptr != tmpbuf) && !source_exists(tmpbuf) && source_exists(relfile))
+		strcpy(tmpbuf, relfile);
+
 	return tmpbuf;
 }
 
@@ -1607,7 +1615,7 @@ static bool directive_term(parser *p, cell *c)
 		if (!is_atom(p1)) return true;
 		unsigned save_line_nbr = p->line_num;
 		const char *name = C_STR(p, p1);
-		char *filename = relative_to(p->m->filename, name);
+		char *filename = relative_to(loading_base(p->m), name);
 
 		if (!load_file(p->m, filename, true, false)) {
 			if (!p->do_read_term)
@@ -1630,7 +1638,7 @@ static bool directive_term(parser *p, cell *c)
 		if (!is_atom(p1)) return true;
 		unsigned save_line_nbr = p->line_num;
 		const char *name = C_STR(p, p1);
-		char *filename = relative_to(p->m->filename, name);
+		char *filename = relative_to(loading_base(p->m), name);
 
 		if (!load_file(p->m, filename, false, false)) {
 			if (!p->do_read_term)
@@ -1789,6 +1797,8 @@ static bool directive_term(parser *p, cell *c)
 			if (tmp_m != p->m)
 				module_add_use(p->m, tmp_m);
 
+			// Not its name, so relative loads in the module resolve against its file
+			tmp_m->filename = set_known(tmp_m, loading_base(p->m));
 			p->m = tmp_m;
 		}
 

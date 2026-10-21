@@ -18,6 +18,7 @@ module *load_file(module *m, const char *filename, bool including, bool init);
 module *load_fp(module *m, FILE *fp, const char *filename, bool including, bool init);
 module *load_text(module *m, const char *src, const char *filename);
 bool unload_file(module *m, const char *filename);
+const char *set_known(module *m, const char *filename);
 void set_unloaded(module *m, const char *filename);
 const char *get_loaded(const module *m, const char *filename);
 void set_parent(const module *m, const char *filename, const char *parent);

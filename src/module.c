@@ -128,7 +128,7 @@ builtins *get_module_help(module *m, const char *name, unsigned arity, bool *fou
 	return NULL;
 }
 
-static const char *set_known(module *m, const char *filename)
+const char *set_known(module *m, const char *filename)
 {
 	loaded_file *ptr = m->loaded_files;
 
@@ -144,6 +144,7 @@ static const char *set_known(module *m, const char *filename)
 	ptr->next = m->loaded_files;
 	ptr->orig_filename = TPL_strdup(filename);
 	ptr->filename = TPL_strdup(filename);
+	ptr->when_loaded = 0;
 	ptr->is_loaded = false;
 	ptr->parent = NULL;
 	m->loaded_files = ptr;
@@ -267,7 +268,9 @@ void make(module *m)
 		struct stat st = {0};
 		loaded_file *save = ptr->next;
 
-		if (stat(ptr->filename, &st) == 0) {
+		// A file only known, as a module's own source is, was not loaded into m
+
+		if (ptr->is_loaded && (stat(ptr->filename, &st) == 0)) {
 			if (st.st_mtime > ptr->when_loaded) {
 				char *parent_filename = TPL_strdup(get_parent(m, ptr->filename));
 				printf("%% %s changed\n", ptr->filename);
@@ -1548,7 +1551,8 @@ static bool do_use_module(module *cur_m, cell *c, module **mptr)
 		return !m->error;
 	}
 
-	char *filename = relative_to(cur_m->filename, is_library?dstbuf:name);
+	char *filename = is_library ? TPL_strdup(dstbuf) : relative_to(loading_base(cur_m), name);
+	ENSURE(filename);
 
 	if (!(m = load_file(cur_m, filename, false, true))) {
 		fprintf(stderr, "Warning: module file not found: %s\n", filename);
@@ -3412,6 +3416,31 @@ static const char *g_src_suffixes[] = {
 	".pl", "", ".pro", ".prolog", ".p", ".P"
 };
 
+// Whether load_file() would find filename, trying the same suffixes
+
+bool source_exists(const char *filename)
+{
+#if !TPL_FEATURE_FILESYSTEM
+	(void)filename;
+	return false;
+#else
+	size_t len = strlen(filename);
+	char *tmpbuf = TPL_malloc(len + 20);
+	ENSURE(tmpbuf);
+	bool found = false;
+
+	for (unsigned i = 0; !found && (i < (sizeof(g_src_suffixes) / sizeof(g_src_suffixes[0]))); i++) {
+		memcpy(tmpbuf, filename, len);
+		strcpy(tmpbuf + len, g_src_suffixes[i]);
+		struct stat st = {0};
+		found = !stat(tmpbuf, &st);
+	}
+
+	TPL_free(tmpbuf);
+	return found;
+#endif
+}
+
 bool unload_file(module *m, const char *filename)
 {
 #if !TPL_FEATURE_FILESYSTEM
@@ -3469,7 +3498,9 @@ module *load_fp(module *m, FILE *fp, const char *filename, bool including, bool 
 	parser *p = parser_create(m);
 	if (!p) return NULL;
 	const char *save_filename = m->filename;
+	const char *save_source = m->source_filename;
 	if (!including) m->filename = set_known(m, filename);
+	m->source_filename = filename;
 	p->is_consulting = true;
 	p->fp = fp;
 	bool ok = false;
@@ -3492,8 +3523,11 @@ module *load_fp(module *m, FILE *fp, const char *filename, bool including, bool 
 	}
 	 while (ok && !p->already_loaded_error && !g_tpl_interrupt);
 
-	if (g_tpl_interrupt)
+	if (g_tpl_interrupt) {
+		m->filename = save_filename;
+		m->source_filename = save_source;
 		return NULL;
+	}
 
 	if (!p->error && !p->already_loaded_error && !p->end_of_term && p->cl->cidx) {
 		if (!p->do_read_term)
@@ -3520,6 +3554,7 @@ module *load_fp(module *m, FILE *fp, const char *filename, bool including, bool 
 	ok = !p->error;
 	parser_destroy(p);
 	m->filename = save_filename;
+	m->source_filename = save_source;
 
 	if (!ok)
 		unload_realfile(m, filename);
@@ -3937,7 +3972,7 @@ static module *module_reuse(prolog *pl)
 	m->gex_head = m->gex_tail = NULL;
 	m->p = NULL;
 	m->fp = NULL;
-	m->filename = m->name = m->actual_filename = NULL;
+	m->filename = m->name = m->actual_filename = m->source_filename = NULL;
 	m->index = m->ops = m->defops = m->keyval = m->props = NULL;
 	m->loaded_files = NULL;
 	memset(&m->flags, 0, sizeof(m->flags));

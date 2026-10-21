@@ -4985,7 +4985,7 @@ bool do_load_file(query *q, cell *p1, pl_ctx p1_ctx)
 {
 	if (is_atom(p1)) {
 		char *src = DUP_STRING(q, p1);
-		char *filename = relative_to(q->st.m->filename, src);
+		char *filename = relative_to(loading_base(q->st.m), src);
 		unload_file(q->st.m, filename);
 		TPL_free(src);
 
@@ -5013,7 +5013,7 @@ bool do_load_file(query *q, cell *p1, pl_ctx p1_ctx)
 	module *tmp_m = module_create(q->pl, C_STR(q, mod));
 	CHECKED(tmp_m);
 	char *src = DUP_STRING(q, file);
-	char *filename = relative_to(q->st.m->filename, src);
+	char *filename = relative_to(loading_base(q->st.m), src);
 	TPL_free(src);
 	unload_file(tmp_m, filename);
 
@@ -5031,7 +5031,7 @@ static bool do_unload_file(query *q, cell *p1, pl_ctx p1_ctx)
 {
 	if (is_atom(p1)) {
 		char *src = DUP_STRING(q, p1);
-		char *filename = relative_to(q->st.m->filename, src);
+		char *filename = relative_to(loading_base(q->st.m), src);
 		TPL_free(src);
 		unload_file(q->st.m, filename);
 		TPL_free(filename);
@@ -5051,7 +5051,7 @@ static bool do_unload_file(query *q, cell *p1, pl_ctx p1_ctx)
 		return throw_error(q, p1, p1_ctx, "type_error", "source_sink");
 
 	char *src = DUP_STRING(q, file);
-	char *filename = relative_to(q->st.m->filename, src);
+	char *filename = relative_to(loading_base(q->st.m), src);
 	TPL_free(src);
 	unload_file(q->st.m, filename);
 	TPL_free(filename);
