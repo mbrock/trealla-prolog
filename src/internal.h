@@ -351,6 +351,7 @@ enum {
 #define IS_OP(c) (GET_OP(c) != 0)
 
 typedef struct module_ module;
+typedef struct modmap_ modmap;
 typedef struct query_ query;
 typedef struct predicate_ predicate;
 typedef struct rule_ rule;
@@ -1340,8 +1341,7 @@ struct prolog_ {
 	skiplist *threads;
 	thread *live_head, *live_tail, *free_head, *free_tail, *main_thread;
 	unsigned next_thread_id;
-	module **modmap;
-	unsigned modmap_alloc;
+	modmap *modmap;					// see module_by_id()
 	list modules;
 	module *system_m, *user_m, *m, *dcgs;
 	module *dead_modules;				// emptied by destroy_module/1, for module_create() to take again
@@ -1387,11 +1387,21 @@ struct prolog_ {
 };
 
 // A module by id, or NULL for one that was never registered - which is what
-// indexing the old fixed array gave, since it was zeroed.
+// indexing the old fixed array gave, since it was zeroed. Read with no lock
+// on every return, so a grown map is a new block published whole, its size
+// travelling with it, and the old one kept until exit for readers still in
+// it (#1173).
+
+struct modmap_ {
+	modmap *prev;
+	unsigned alloc;
+	module *slots[];
+};
 
 static inline module *module_by_id(const prolog *pl, unsigned id)
 {
-	return (id < pl->modmap_alloc) ? pl->modmap[id] : NULL;
+	const modmap *mm = pl->modmap;
+	return mm && (id < mm->alloc) ? mm->slots[id] : NULL;
 }
 
 extern pl_idx g_empty_s, g_pair_s, g_dot_s, g_cut_s, g_nil_s, g_true_s, g_fail_s;

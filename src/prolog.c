@@ -1138,7 +1138,14 @@ void pl_destroy(prolog *pl)
 		module_destroy(m);
 	}
 
-	TPL_free(pl->modmap);
+	modmap *mm = pl->modmap;
+
+	while (mm) {
+		modmap *save = mm;
+		mm = mm->prev;
+		TPL_free(save);
+	}
+
 	sl_destroy(pl->fortab);
 	sl_destroy(pl->help);
 	sl_destroy(pl->alias);

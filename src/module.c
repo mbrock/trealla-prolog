@@ -3806,8 +3806,10 @@ void module_destroy(module *m)
 	if ((m->pl->modules.front == &m->hdr) || m->hdr.prev || m->hdr.next)
 		list_remove(&m->pl->modules, m);
 
-	if ((m->id < m->pl->modmap_alloc) && (m->pl->modmap[m->id] == m))
-		m->pl->modmap[m->id] = NULL;
+	modmap *mm = m->pl->modmap;
+
+	if (mm && (m->id < mm->alloc) && (mm->slots[m->id] == m))
+		mm->slots[m->id] = NULL;
 
 	deinit_lock(&m->guard);
 	TPL_free(m);
@@ -3892,27 +3894,36 @@ bool module_add_use(module *m, module *used)
 
 // Ids are handed out monotonically, a reused module keeping its own, so
 // the map only ever grows at the end, as far as the modules made need.
+// Called under the prolog lock; see module_by_id() for why it never
+// reallocs in place.
 
 static bool modmap_set(prolog *pl, unsigned id, module *m)
 {
-	if (id >= pl->modmap_alloc) {
-		unsigned wanted = pl->modmap_alloc ? pl->modmap_alloc * 2 : 16;
+	modmap *mm = pl->modmap;
+
+	if (!mm || (id >= mm->alloc)) {
+		unsigned wanted = mm ? mm->alloc * 2 : 16;
 
 		while (wanted <= id)
 			wanted *= 2;
 
-		module **tmp = TPL_realloc(pl->modmap, wanted * sizeof(module*));
+		modmap *tmp = TPL_calloc(1, sizeof(modmap) + wanted * sizeof(module*));
 
 		if (!tmp)
 			return false;
 
-		memset(tmp + pl->modmap_alloc, 0,
-			(wanted - pl->modmap_alloc) * sizeof(module*));
+		if (mm)
+			memcpy(tmp->slots, mm->slots, mm->alloc * sizeof(module*));
+
+		tmp->prev = mm;
+		tmp->alloc = wanted;
+		tmp->slots[id] = m;
+		pl_publish_barrier();
 		pl->modmap = tmp;
-		pl->modmap_alloc = wanted;
+		return true;
 	}
 
-	pl->modmap[id] = m;
+	mm->slots[id] = m;
 	return true;
 }
 
@@ -4063,8 +4074,10 @@ module *module_create(prolog *pl, const char *name)
 
 		init_lock(&m->guard);
 		m->pl = pl;
+		prolog_lock(pl);
 		m->id = ++pl->next_mod_id;
 		modmap_set(pl, m->id, m);
+		prolog_unlock(pl);
 	}
 
 	m->filename = set_known(m, name);
