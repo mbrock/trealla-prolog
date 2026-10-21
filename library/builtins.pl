@@ -23,6 +23,13 @@ term_variables(P1, P2, P3) :-
 	term_variables(P1, P4),
 	append(P4, P3, P2).
 
+:- help(rational(+term,-integer,-integer), [iso(false)]).
+
+rational(X, N, D) :-
+	rational(X),
+	N is numerator(X),
+	D is denominator(X).
+
 length(Xs0, N) :-
    '$skip_max_list'(M, N, Xs0,Xs),
    !,

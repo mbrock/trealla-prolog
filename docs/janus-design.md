@@ -481,16 +481,15 @@ places where Trealla's arithmetic is richer than the PIP — unbounded integers,
 rationals — are places to follow SWI rather than the spec.
 
 Mapping `fractions.Fraction` onto Trealla's rationals is nearly free.
-Trealla's are *atomic* — `1 rdiv 3` prints as an operator term but `compound/1`
+Trealla's are *atomic* — `1r3` (or `1 rdiv 3` under strict ISO), where `compound/1`
 is false and it does not unify with `A rdiv B` — so decomposition goes through
 the evaluable functions `numerator/1` and `denominator/1`, and construction
 through `X is N rdiv D`. All three carry bignums. **[checked]**
 
 **Do not port SWI's text trick, though.** SWI converts through the printed form:
 outbound it hands `Fraction()` an `"N/D"` string, inbound it takes `str(obj)`,
-swaps `/` for `r`, and reads `1r3` back as a term. Neither half survives the trip
-here. Trealla does not read `1r3`, and `atom_number/2` rejects `'1 rdiv 3'`
-**[checked]**. More seriously, both halves route through the same decimal digit
+swaps `/` for `r`, and reads `1r3` back as a term. Trealla reads `1r3` too now
+(outside strict ISO), but both halves route through the same decimal digit
 cap as the integers above. An earlier draft called this an inference and warned
 against repeating it as fact; with SWI built, it is now simply a fact.
 **[checked]**

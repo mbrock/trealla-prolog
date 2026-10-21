@@ -1686,13 +1686,23 @@ static bool print_canonical_compound(query *q, cell *c, pl_ctx c_ctx, bool runni
 	return true;
 }
 
+// is_negative() leaves out rationals, which need the same spacing when written
+
+static bool is_negative_number(const cell *c)
+{
+	if (is_rational(c))
+		return c->val_bigint->irat.num.sign == MP_NEG;
+
+	return is_number(c) && is_negative(c);
+}
+
 // Whether an operator term is written starting with a non-negative number, which a - before it would negate
 
 static bool starts_with_number(query *q, cell *c, pl_ctx c_ctx, bool running)
 {
 	for (;;) {
 		if (is_number(c))
-			return !is_negative(c);
+			return !is_negative_number(c);
 
 		if (is_iso_list(c))		// written [...] even when . is an operator
 			return false;
@@ -1828,7 +1838,7 @@ static bool print_operator(query *q, cell *c, pl_ctx c_ctx, bool running, unsign
 		if ((c->val_off == g_plus_s) && is_op_rhs) space = true;
 		int ch = peek_char_utf8(src);
 		if (iswalpha(ch)) space = true;
-		if (/*is_op_rhs ||*/ is_negative(rhs) || is_float(rhs)) space = true;
+		if (/*is_op_rhs ||*/ is_negative_number(rhs) || is_float(rhs)) space = true;
 		if (is_interned(rhs) && !iswalpha(peek_char_utf8(rhs_src)) && !is_op(rhs)) space = true;
 
 		bool parens = false;
@@ -2015,7 +2025,7 @@ static bool print_operator(query *q, cell *c, pl_ctx c_ctx, bool running, unsign
 	unsigned rhs_pri_1 = is_interned(rhs) ? match_op(q->st.m, C_STR(q, rhs), NULL, get_arity(rhs)) : 0;
 	unsigned rhs_pri_2 = is_interned(rhs) && !get_arity(rhs) ? match_op(q->st.m, C_STR(q, rhs), NULL, true) : 0;
 	bool rhs_parens = rhs_pri_1 >= my_priority;
-	space = is_number(rhs) && is_negative(rhs);
+	space = is_negative_number(rhs);
 
 	if (!rhs_parens && is_prefix(rhs) && strcmp(src, "|"))
 		space = true;
@@ -2361,8 +2371,8 @@ static bool print_term_dispatch(query *q, cell *c, pl_ctx c_ctx, int running, in
 
 	// NEGATIVE
 
-	if (is_number(c) && is_negative(c)) {
-		if (is_negative(c) && (q->last_thing == WAS_SYMBOL)) {
+	if (is_negative_number(c)) {
+		if (q->last_thing == WAS_SYMBOL) {
 			emit(q, " ");
 			q->last_thing = WAS_SPACE;
 		}
@@ -2375,7 +2385,7 @@ static bool print_term_dispatch(query *q, cell *c, pl_ctx c_ctx, int running, in
 		if (!emit_bigint(q, &c->val_bigint->irat.num, 10))
 			return false;
 
-		emit(q, " rdiv ");
+		emit(q, q->st.m->flags.strict_iso ? " rdiv " : "r");
 
 		if (!emit_bigint(q, &c->val_bigint->irat.den, 10))
 			return false;

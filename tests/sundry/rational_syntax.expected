@@ -1,0 +1,24 @@
+1r3
+1r2
+2
+0
+-1r3
+1000r3
+syntax_error(number)
+syntax_error(operator_expected)
+syntax_error(operator_expected)
+syntax_error(operator_expected)
+-1r3 ok
+1r3 ok
+a- -1r3 ok
+- (1r3) ok
+- -1r3 ok
+2* -1r3 ok
+[-1r3,1r3] ok
+1 rdiv 3 ok
+1/3
+5/1
+float_not_rational
+1r3
+1 rdiv 3
+syntax_error(operator_expected)

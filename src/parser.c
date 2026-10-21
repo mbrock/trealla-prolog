@@ -4326,7 +4326,46 @@ static bool parse_number(parser *p, const char **srcptr, bool neg)
 		return true;
 	}
 
-	if (mp_int_to_int(&v2, &val) == MP_RANGE) {
+	// SWI's 1r3 rational syntax, read reduced, so 4r2 is the integer 2
+
+	bigint *rat = NULL;
+
+	if (!p->flags.strict_iso && (*s == 'r') && isdigit((unsigned char)s[1])) {
+		s++;
+		rat = TPL_malloc(sizeof(bigint));
+		ENSURE(rat);
+		mp_rat_init(&rat->irat);
+		read_integer(p, &rat->irat.den, 10, &s);
+
+		if (p->error || !mp_int_compare_zero(&rat->irat.den)) {
+			if (!p->error && !p->do_read_term)
+				fprintf(stderr, "Error: syntax error, parsing number, %s:%d\n", get_loaded(p->m, p->m->filename), p->line_num);
+
+			mp_rat_clear(&rat->irat);
+			TPL_free(rat);
+			mp_int_clear(&v2);
+			p->error_desc = "number";
+			p->error = true;
+			return false;
+		}
+
+		mp_int_copy(&v2, &rat->irat.num);
+		mp_rat_reduce(&rat->irat);
+
+		if (!mp_int_compare_value(&rat->irat.den, 1)) {
+			mp_int_copy(&rat->irat.num, &v2);
+			mp_rat_clear(&rat->irat);
+			TPL_free(rat);
+			rat = NULL;
+		}
+	}
+
+	if (rat) {
+		rat->refcnt = 1;
+		if (neg) rat->irat.num.sign = MP_NEG;
+		p->v.val_bigint = rat;
+		p->v.flags |= FLAG_INT_BIG | FLAG_MANAGED;
+	} else if (mp_int_to_int(&v2, &val) == MP_RANGE) {
 		p->v.val_bigint = TPL_malloc(sizeof(bigint));
 		ENSURE(p->v.val_bigint);
 		p->v.val_bigint->refcnt = 1;
@@ -4339,7 +4378,7 @@ static bool parse_number(parser *p, const char **srcptr, bool neg)
 
 	mp_int_clear(&v2);
 	int ch;
-	p->v.tag = TAG_INT;
+	p->v.tag = rat ? TAG_RATIONAL : TAG_INT;
 
 	if ((s[-1] == '.') || isspace((unsigned char)s[-1]))
 		s--;
@@ -6087,7 +6126,7 @@ next_token:
 		bool found = false;
 		last_num = is_number(c);
 
-		if (is_bigint(&p->v)) {
+		if (is_bigint(&p->v) || is_rational(&p->v)) {
 			c->val_bigint = p->v.val_bigint;
 		} else if (is_smallint(&p->v)) {
 			set_smallint(c, get_smallint(&p->v));
