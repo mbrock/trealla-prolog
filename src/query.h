@@ -172,6 +172,7 @@ char *print_term_to_strbuf(query *q, cell *c, pl_ctx c_ctx, int running);
 char *portray_term_to_strbuf(query *q, cell *c, pl_ctx c_ctx);
 size_t stream_write(query *q, const void *ptr, size_t nbytes, stream *str);
 void free_captures(query *q);
+capture *inherit_capture(query *q);
 void clear_write_options(query *q);
 
 // The query's scratch parser, built on first use; NULL if it cannot be.

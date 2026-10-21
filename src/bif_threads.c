@@ -1505,6 +1505,7 @@ static bool bif_thread_create_3(query *q)
 	// off underneath it.
 
 	q->pl->is_multithreaded = true;
+	t->q->inherited = inherit_capture(q);	// made inside with_output_to/2, it writes into that as in SWI
 
 	if (pthread_create((pthread_t*)&t->id, &sa, (void*)start_routine_thread_create, (void*)t) != 0) {
 		// retire_thread() puts t on the free list, where a *different*

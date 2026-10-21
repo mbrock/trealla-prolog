@@ -747,6 +747,9 @@ struct capture_ {
 	capture *prev;
 	stream *str;
 	unsigned gen;						// str's, so a slot closed and reopened is not captured
+	unsigned refs;						// its query's, and each thread's made inside it, see inherit_capture()
+	lock guard;							// taken once shared, as only then can another thread reach it
+	bool shared, ended;
 	stringbuf sb_buf;
 };
 
@@ -1063,6 +1066,7 @@ struct query_ {
 	stringbuf sb_buf;
 	capture *captures;					// with_output_to/2's begun here, innermost first
 	query *out_of;						// whose captures its writes fall through to, see stream_write()
+	capture *inherited;					// a thread's creator's, see inherit_capture()
 
 	// Name numbers already spoken for by variables the user wrote as _A,
 	// _B1 and so on, so a generated name never collides with a source

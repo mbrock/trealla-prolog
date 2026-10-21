@@ -2,3 +2,5 @@ threads(beta,alphaomega)
 tasks([one-ab,two-cd])
 engine
 engine('')
+inherited(grandchildchildparent)
+inherited_many(10000)

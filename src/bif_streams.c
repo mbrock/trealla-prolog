@@ -6888,20 +6888,93 @@ static bool bif_sys_put_chars_2(query *q)
 	return true;
 }
 
-// Write to str, or into the innermost capture of it on q or whoever q writes for, see out_of.
+// The capture a write to str by q lands in: q's or that of whoever q writes for, see out_of, innermost first.
 
-size_t stream_write(query *q, const void *ptr, size_t nbytes, stream *str)
+static capture *find_capture(query *q, stream *str)
 {
 	for (; q; q = q->out_of) {
 		for (capture *c = q->captures; c; c = c->prev) {
-			if ((c->str == str) && (c->gen == str->gen)) {
-				SB_fwrite(c->sb, ptr, nbytes);
-				return nbytes;
-			}
+			if ((c->str == str) && (c->gen == str->gen))
+				return c;
 		}
+
+		capture *c = q->inherited;
+
+		if (c && (c->str == str) && (c->gen == str->gen))
+			return c;
+	}
+
+	return NULL;
+}
+
+static void lock_capture(capture *c)
+{
+	if (c->shared)
+		acquire_lock(&c->guard);
+}
+
+static void unlock_capture(capture *c)
+{
+	if (c->shared)
+		release_lock(&c->guard);
+}
+
+static void unref_capture(capture *c)
+{
+	lock_capture(c);
+	bool last = !--c->refs;
+	unlock_capture(c);
+
+	if (!last)
+		return;
+
+	if (c->shared)
+		deinit_lock(&c->guard);
+
+	SB_free(c->sb);
+	TPL_free(c);
+}
+
+// Write to str, or into its capture; one that has ended, as a thread's creator's can, takes no more.
+
+size_t stream_write(query *q, const void *ptr, size_t nbytes, stream *str)
+{
+	capture *c = find_capture(q, str);
+
+	if (c) {
+		lock_capture(c);
+		bool ok = !c->ended;
+
+		if (ok)
+			SB_fwrite(c->sb, ptr, nbytes);
+
+		unlock_capture(c);
+
+		if (ok)
+			return nbytes;
 	}
 
 	return tpl_write(ptr, nbytes, str);
+}
+
+// For a thread made by q: it writes into what q's current output is captured by, as in SWI.
+
+capture *inherit_capture(query *q)
+{
+	capture *c = find_capture(q, &q->pl->streams[q->pl->current_output]);
+
+	if (!c)
+		return NULL;
+
+	if (!c->shared) {					// so still q's thread's alone
+		init_lock(&c->guard);
+		c->shared = true;
+	}
+
+	lock_capture(c);
+	c->refs++;
+	unlock_capture(c);
+	return c;
 }
 
 static bool begin_capture(query *q, stream *str)
@@ -6913,6 +6986,8 @@ static bool begin_capture(query *q, stream *str)
 
 	c->str = str;
 	c->gen = str->gen;
+	c->refs = 1;
+	c->shared = c->ended = false;
 	SB_init(c->sb);
 	c->prev = q->captures;
 	q->captures = c;
@@ -6931,18 +7006,22 @@ static capture *pop_capture(query *q)
 	return c;
 }
 
-static void free_capture(capture *c)
-{
-	SB_free(c->sb);
-	TPL_free(c);
-}
-
-// Those a query ends with, its goal never having reached the cleanup.
+// Those a query ends with, its goal never having reached the cleanup, and any it inherited.
 
 void free_captures(query *q)
 {
-	while (q->captures)
-		free_capture(pop_capture(q));
+	while (q->captures) {
+		capture *c = pop_capture(q);
+		lock_capture(c);
+		c->ended = true;
+		unlock_capture(c);
+		unref_capture(c);
+	}
+
+	if (q->inherited) {
+		unref_capture(q->inherited);
+		q->inherited = NULL;
+	}
 }
 
 // End the innermost capture and unify its text: as characters, none is [] where make_stringn() would give ''.
@@ -6955,6 +7034,8 @@ static bool end_capture(query *q, cell *p1, pl_ctx p1_ctx, bool as_chars)
 	cell tmp;
 
 	if (c) {
+		lock_capture(c);
+		c->ended = true;
 		src = SB_cstr(c->sb);
 		len = SB_strlen(c->sb);
 	}
@@ -6966,8 +7047,10 @@ static bool end_capture(query *q, cell *p1, pl_ctx p1_ctx, bool as_chars)
 	else
 		make_atom(&tmp, g_nil_s);
 
-	if (c)
-		free_capture(c);
+	if (c) {
+		unlock_capture(c);
+		unref_capture(c);
+	}
 
 	bool ok = unify(q, p1, p1_ctx, &tmp, q->st.cur_ctx);
 	unshare_cell(&tmp);
@@ -7029,6 +7112,8 @@ char *portray_term_to_strbuf(query *q, cell *c, pl_ctx c_ctx)
 	if (!cap)
 		return NULL;
 
+	lock_capture(cap);
+	cap->ended = true;
 	size_t len = SB_strlen(cap->sb);
 	char *dst = q2 ? TPL_malloc(len+1) : NULL;
 
@@ -7038,7 +7123,8 @@ char *portray_term_to_strbuf(query *q, cell *c, pl_ctx c_ctx)
 		dst[len] = '\0';
 	}
 
-	free_capture(cap);
+	unlock_capture(cap);
+	unref_capture(cap);
 	return dst;
 }
 

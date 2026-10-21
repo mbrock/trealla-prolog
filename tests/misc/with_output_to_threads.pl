@@ -1,10 +1,10 @@
-% Issue #1174: with_output_to/2 collects only its own thread's or task's writes, and not an engine's.
+% Issue #1174: with_output_to/2 collects only its own thread's or task's writes, and not an engine's, but a thread made inside it writes into it.
 
 :- initialization(main).
 :- dynamic(got/2).
 
 main :-
-	threads, tasks, engine.
+	threads, tasks, engine, inherited, inherited_many.
 
 threads :-
 	thread_self(Parent),
@@ -39,3 +39,15 @@ engine :-
 	engine_create(X, (write(engine), X = 1), E),
 	with_output_to(atom(A), engine_next(E, _)), nl,
 	writeq(engine(A)), nl.
+
+inherited :-
+	with_output_to(atom(A), (thread_create((thread_create(write(grandchild), G, []), thread_join(G, _), write(child)), T, []), thread_join(T, _), write(parent))),
+	writeq(inherited(A)), nl.
+
+inherited_many :-
+	with_output_to(atom(A),
+		( findall(T, (between(1, 4, I), thread_create(forall(between(1, 2000, _), write(I)), T, [])), Ts),
+		  forall(between(1, 2000, _), write(p)),
+		  forall(member(T, Ts), thread_join(T, _)) )),
+	atom_length(A, L),
+	writeq(inherited_many(L)), nl.
