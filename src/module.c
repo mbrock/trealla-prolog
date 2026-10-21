@@ -3809,6 +3809,8 @@ void module_destroy(module *m)
 	// module_create() links the module only once it is fully built, so a
 	// failure part-way through leaves an unlinked node here.
 
+	prolog_lock(m->pl);					// as module_create() links and maps, or a grow could copy the slot back
+
 	if ((m->pl->modules.front == &m->hdr) || m->hdr.prev || m->hdr.next)
 		list_remove(&m->pl->modules, m);
 
@@ -3817,6 +3819,7 @@ void module_destroy(module *m)
 	if (mm && (m->id < mm->alloc) && (mm->slots[m->id] == m))
 		mm->slots[m->id] = NULL;
 
+	prolog_unlock(m->pl);
 	deinit_lock(&m->guard);
 	TPL_free(m);
 }
@@ -4082,8 +4085,14 @@ module *module_create(prolog *pl, const char *name)
 		m->pl = pl;
 		prolog_lock(pl);
 		m->id = ++pl->next_mod_id;
-		modmap_set(pl, m->id, m);
+		bool mapped = modmap_set(pl, m->id, m);
 		prolog_unlock(pl);
+
+		if (!mapped) {					// unmapped, its code would find no module on return
+			deinit_lock(&m->guard);
+			TPL_free(m);
+			return NULL;
+		}
 	}
 
 	m->filename = set_known(m, name);
@@ -4143,6 +4152,9 @@ module *module_create(prolog *pl, const char *name)
 	set_dynamic_in_db(m, "goal_expansion", 2);
 	set_dynamic_in_db(m, "$directive", 1);
 
+	pl_publish_barrier();				// find_module() walks the list unlocked
+	prolog_lock(pl);
 	list_push_back(&pl->modules, m);
+	prolog_unlock(pl);
 	return m;
 }
