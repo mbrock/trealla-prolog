@@ -2525,10 +2525,10 @@ static bool rebase_var(parser *p, cell *c, bool in_body)
 	char tmpbuf[20];
 	snprintf(tmpbuf, sizeof(tmpbuf), "___V%u", c->var_num);
 	pl_idx *cache = c->var_num < MAX_VARS ? &p->pl->rebase_names[c->var_num] : NULL;
-	pl_idx off = cache ? __atomic_load_n(cache, __ATOMIC_RELAXED) : 0;
+	pl_idx off = cache ? __atomic_load_n(cache, __ATOMIC_ACQUIRE) : 0;
 
 	if (!off && ((off = new_atom(p->pl, tmpbuf)) != ERR_IDX) && cache)
-		__atomic_store_n(cache, off, __ATOMIC_RELAXED);
+		__atomic_store_n(cache, off, __ATOMIC_RELEASE);
 
 	if (off == ERR_IDX) {
 		p->error = true;
@@ -3260,9 +3260,10 @@ static cell *goal_expansion_(parser *p, cell *goal);
 // goal_expansion() and term_to_body_conversion() call each other: an
 // expansion's output is re-walked as a body, and any goal in it is
 // expanded again. A goal that reintroduces itself therefore recurses
-// through BOTH functions, so the guard has to be nesting depth held on the
-// prolog instance - each expansion runs in a NEW parser, so a counter
-// on the parser resets every round too.
+// through BOTH functions, so the guard has to be nesting depth held
+// outside the parser - each expansion runs in a NEW parser, so a counter
+// on the parser resets every round too. It is per thread: expansion
+// nests only on the C stack, and one thread's depth is no limit on another's.
 //
 // Issue #900: goal_expansion(p(B), B) :- b((m,p(_))). The expansion
 // changes the goal every time, so a fixpoint check alone never fires;
@@ -3275,12 +3276,13 @@ static cell *goal_expansion_(parser *p, cell *goal);
 
 #define MAX_GOAL_EXPANSIONS 64
 
+static pl_thread_local unsigned s_goal_expansions;
+static pl_thread_local bool s_in_goal_expansion;	// running a goal_expansion/2 hook, whose own clauses are not expanded
+
 static cell *goal_expansion(parser *p, cell *goal)
 {
-	if (p->pl->goal_expansions >= MAX_GOAL_EXPANSIONS) {
+	if (s_goal_expansions >= MAX_GOAL_EXPANSIONS) {
 		if (!p->error) {
-			fprintf(stderr, "Error: goal_expansion/2 did not terminate, %s:%d\n",
-				get_loaded(p->m, p->m->filename), p->line_num);
 			p->error_desc = "goal_expansion_limit";
 			p->error = true;
 		}
@@ -3288,10 +3290,30 @@ static cell *goal_expansion(parser *p, cell *goal)
 		return goal;
 	}
 
-	p->pl->goal_expansions++;
+	s_goal_expansions++;
 	cell *ret = goal_expansion_(p, goal);
-	p->pl->goal_expansions--;
+	s_goal_expansions--;
 	return ret;
+}
+
+// Reported once, by the parser that consulted or read the clause: an expansion's own sub-parsers stay quiet, and assert raises it instead.
+
+static void report_expansion_error(parser *p)
+{
+	if (p->reuse || p->do_read_term)
+		return;
+
+	const char *desc = p->error_desc;
+	const char *filename = get_loaded(p->m, p->m->filename);
+
+	if (desc && !strcmp(desc, "goal_expansion_limit"))
+		fprintf(stderr, "Error: goal_expansion/2 did not terminate, %s:%d\n", filename, p->line_num);
+	else if (desc && !strcmp(desc, "instantiation_error"))
+		fprintf(stderr, "Error: instantiation error, goal_expansion/2, %s:%d\n", filename, p->line_num);
+	else if (!desc || !strcmp(desc, "memory"))
+		fprintf(stderr, "Error: out of memory, goal_expansion/2, %s:%d\n", filename, p->line_num);
+
+	// Anything else is a syntax error the sub-parser has already reported.
 }
 
 static cell *goal_expansion_(parser *p, cell *goal)
@@ -3317,7 +3339,7 @@ static cell *goal_expansion_(parser *p, cell *goal)
 	//if (search_predicate(p->m, goal))
 	//	return goal;
 
-	if (p->pl->in_goal_expansion) {
+	if (s_in_goal_expansion) {
 		//printf("??? goal_expansion %s/%u\n", C_STR(p, goal), get_arity(goal));
 		return goal;
 	}
@@ -3383,11 +3405,11 @@ static cell *goal_expansion_(parser *p, cell *goal)
 	p2->line_num = p->line_num;
 	p2->skip = true;
 	p2->srcptr = SB_cstr(s);
-	p->pl->in_goal_expansion = true;
+	s_in_goal_expansion = true;
 	tokenize(p2, false, false);
 
 	if (p2->error) {
-		p->pl->in_goal_expansion = false;
+		s_in_goal_expansion = false;
 		p->error_desc = p2->error_desc;
 		parser_destroy(p2);
 		query_destroy(q);
@@ -3399,7 +3421,7 @@ static cell *goal_expansion_(parser *p, cell *goal)
 	process_clause(p2->m, p2->cl);
 	execute(q, p2->cl->cells, p2->cl->num_vars);
 	SB_free(s);
-	p->pl->in_goal_expansion = false;
+	s_in_goal_expansion = false;
 
 	if (q->retry != QUERY_OK) {
 		parser_destroy(p2);
@@ -3466,9 +3488,6 @@ static cell *goal_expansion_(parser *p, cell *goal)
 	tokenize(p2, false, false);
 
 	if (is_var(p2->cl->cells)) {
-		if (!p2->do_read_term)
-			fprintf(stderr, "Error: instantiation error, goal_expansion/2, %s:%d\n", get_loaded(p->m, p->m->filename), p->line_num);
-
 		p2->error_desc = "instantiation_error";
 		p2->error = true;
 	}
@@ -5295,6 +5314,14 @@ bool expand_term(parser *p, cell *c)
 
 				process_clause(p2->m, p2->cl);
 				term_to_body(p2);
+
+				if (p2->error) {
+					report_expansion_error(p2);
+					p->error = true;
+					parser_destroy(p2);
+					return false;
+				}
+
 				c2 = p2->cl->cells;
 			}
 
@@ -5611,6 +5638,11 @@ next_token:
 
 				if (!p->one_shot /*|| p->is_command*/)
 					term_to_body(p);
+
+				if (p->error) {
+					report_expansion_error(p);
+					return 0;
+				}
 
 				if (p->is_consulting && !p->skip) {
 					term_expansion(p);

@@ -5,6 +5,9 @@ clause_ref ok
 twice ok
 quoted ok
 unbound threw instantiation_error
+unbound_asserta threw instantiation_error
+unbound_assertz2 threw instantiation_error
+unbound_asserta2 threw instantiation_error
 unbound_not_stored ok
 loop threw resource_error(goal_expansion_limit)
 module ok

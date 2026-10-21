@@ -146,17 +146,10 @@ static bool bif_clause_3(query *q)
 		if (q->did_throw) return true;
 
 		if (ok) {
-			bool last_match;
-
-			if (is_var(p3)) {
-				last_match = !has_next_key(q);
-			} else {
-				last_match = true;
-			}
-
-			if (last_match) {
+			if (!is_var(p3))
+				drop_choice(q);		// by reference enters no predicate, so has none to leave
+			else if (!has_next_key(q))
 				leave_predicate_and_drop(q, q->st.pr, true);
-			}
 
 			return true;
 		}
@@ -688,7 +681,7 @@ static bool throw_expansion_error(query *q, parser *p, cell *tmp)
 	const char *desc = p->error_desc;
 	parser_destroy(p);
 
-	if (!desc)
+	if (!desc || !strcmp(desc, "memory"))
 		return throw_error(q, tmp, q->st.cur_ctx, "resource_error", "memory");
 
 	if (!strcmp(desc, "instantiation_error"))

@@ -1363,7 +1363,6 @@ struct prolog_ {
 	unsigned next_mod_id, def_max_depth, my_chan;
 	unsigned tbl_max_answer_size, tbl_max_subgoal_size, tbl_max_answers_for_subgoal;
 	unsigned current_input, current_output, current_error;
-	pl_atomic int goal_expansions;		// every thread bumps it; plain ++/-- wrapped below zero
 	pl_atomic unsigned pred_gen;		// bumped when a module gains or loses a predicate
 	int8_t halt_code, opt, limit;
 	pl_refcnt rnd_first_time;
@@ -1381,7 +1380,6 @@ struct prolog_ {
 	bool noindex:1;
 	bool iso_only:1;
 	bool trace:1;
-	bool in_goal_expansion:1;
 	bool global_bb:1;
 	bool tabling:1;			// tabling flag: enabled by default
 	bool float_concise:1;		// float_representation_concise flag: 1.0e15, not 1.0e+15

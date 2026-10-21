@@ -25,6 +25,9 @@ main :-
 	asserta(('q x'(X,'A b',X) :- dbl(X,_))),
 	check(quoted, 'q x'(1,'A b',1)),
 	throws(unbound, assertz((u(X) :- unbound(X)))),
+	throws(unbound_asserta, asserta((u(X) :- unbound(X)))),
+	throws(unbound_assertz2, assertz((u(X) :- unbound(X)), _)),
+	throws(unbound_asserta2, asserta((u(X) :- unbound(X)), _)),
 	check(unbound_not_stored, \+ catch(clause(u(_),_), _, fail)),
 	throws(loop, assertz((l(X) :- loop(X)))),
 	check(module, module_case).
