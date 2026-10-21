@@ -925,12 +925,12 @@ struct thread_ {
 	unsigned tl_shadows_n, tl_shadows_cap;
 	volatile int timedout;   // set by SIGALRM handler s_sigfn(); thread-lived
 	bool is_init:1;
-	bool is_finished:1;
-	bool is_detached:1;
-	bool is_exception:1;
-	bool is_failed:1;
 	bool is_queue_only:1;
 	bool is_mutex_only:1;
+
+	// Set by the thread as it ends, or by another detaching it, so not bitfields whose byte a write would clobber.
+
+	pl_atomic bool is_finished, is_detached, is_exception, is_failed;
 };
 
 struct page_ {
@@ -1361,6 +1361,7 @@ struct prolog_ {
 	pl_atomic unsigned pred_gen;		// bumped when a module gains or loses a predicate
 	int8_t halt_code, opt, limit;
 	pl_refcnt rnd_first_time;
+	pl_atomic bool did_dump_vars;		// every thread's execute() clears it, so not in the bitfield word with trace and halt
 	bool def_quoted:1;
 	bool def_double_quotes:1;
 	bool is_redo:1;
@@ -1369,7 +1370,6 @@ struct prolog_ {
 	bool halt:1;
 	bool status:1;
 	bool error:1;
-	bool did_dump_vars:1;
 	bool autofail:1;
 	bool quiet:1;
 	bool noindex:1;

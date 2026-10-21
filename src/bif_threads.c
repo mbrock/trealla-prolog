@@ -1183,18 +1183,26 @@ static bool bif_thread_peek_message_2(query *q)
 }
 
 
+// Release the mutexes me holds, each as often as taken and only once marked free, under the lock that guards the live list.
+
 static void do_unlock_all(thread *me)
 {
 	prolog *pl = me->pl;
+	prolog_lock(pl);
 
 	for_each_thread(pl, t) {
 		if (t->locked_by != me->chan)
 			continue;
 
-		release_lock(&t->guard);
+		unsigned n = t->num_locks;
 		t->locked_by = -1;
 		t->num_locks = 0;
+
+		while (n--)
+			release_lock(&t->guard);
 	}
+
+	prolog_unlock(pl);
 }
 
 // A goal ended by thread_exit/1 can leave choicepoints, such as a catch/3
@@ -1226,7 +1234,6 @@ static void *start_routine_thread_create(thread *t)
 	unshare_cells(t->goal, t->goal->num_cells);
 	TPL_free(t->goal);
 	t->goal = NULL;
-	t->is_finished = true;
 
 	// The ball is already a detached image - find_exception_handler rebased it from 0 - so keep it flat, a plain copy that join can import like a thread message. dup_cells_by_ref reattached its variables to a frame the joiner never had.
 
@@ -1249,6 +1256,7 @@ static void *start_routine_thread_create(thread *t)
 	// or threw.
 
 	t->is_failed = !t->q->halt && !t->is_exception;
+	t->is_finished = true;				// last, so whoever sees it finished sees how it ended
 
 	if (t->at_exit_goal) {
 		execute(t->q, t->at_exit_goal, t->at_exit_goal_num_vars);
@@ -2010,18 +2018,18 @@ static bool do_thread_property_pin_both(query *q)
 		make_atom(tmp+1, t->is_detached?g_true_s:g_false_s);
 		return unify(q, c, c_ctx, tmp, q->st.cur_ctx);
 	} else if (!CMP_STRING_TO_CSTR(q, p2, "status")) {
+		if (!t->is_finished) {
+			cell *tmp = alloc_heap(q, 2);
+			make_instr(tmp, new_atom(q->pl, "status"), NULL, 1, 1);
+			make_atom(tmp+1, new_atom(q->pl, "running"));
+			return unify(q, c, c_ctx, tmp, q->st.cur_ctx);
+		}
+
 		if (t->is_exception) {
 			cell *tmp = alloc_heap(q, 2+t->ball->num_cells);
 			make_instr(tmp, new_atom(q->pl, "status"), NULL, 1, 1+t->ball->num_cells);
 			make_instr(tmp+1, new_atom(q->pl, "exception"), NULL, 1, t->ball->num_cells);
 			dup_cells(tmp+2, t->ball, t->ball->num_cells);
-			return unify(q, c, c_ctx, tmp, q->st.cur_ctx);
-		}
-
-		if (!t->is_finished) {
-			cell *tmp = alloc_heap(q, 2);
-			make_instr(tmp, new_atom(q->pl, "status"), NULL, 1, 1);
-			make_atom(tmp+1, new_atom(q->pl, "running"));
 			return unify(q, c, c_ctx, tmp, q->st.cur_ctx);
 		}
 
@@ -2122,18 +2130,18 @@ static bool do_thread_property_pin_id(query *q)
 		make_atom(tmp+1, t->is_detached?g_true_s:g_false_s);
 		return unify(q, p2, p2_ctx, tmp, q->st.cur_ctx);
 	} else {
+		if (!t->is_finished) {
+			cell *tmp = alloc_heap(q, 2);
+			make_instr(tmp, new_atom(q->pl, "status"), NULL, 1, 1);
+			make_atom(tmp+1, new_atom(q->pl, "running"));
+			return unify(q, p2, p2_ctx, tmp, q->st.cur_ctx);
+		}
+
 		if (t->is_exception) {
 			cell *tmp = alloc_heap(q, 2+t->ball->num_cells);
 			make_instr(tmp, new_atom(q->pl, "status"), NULL, 1, 1+t->ball->num_cells);
 			make_instr(tmp+1, new_atom(q->pl, "exception"), NULL, 1, t->ball->num_cells);
 			dup_cells(tmp+2, t->ball, t->ball->num_cells);
-			return unify(q, p2, p2_ctx, tmp, q->st.cur_ctx);
-		}
-
-		if (!t->is_finished) {
-			cell *tmp = alloc_heap(q, 2);
-			make_instr(tmp, new_atom(q->pl, "status"), NULL, 1, 1);
-			make_atom(tmp+1, new_atom(q->pl, "running"));
 			return unify(q, p2, p2_ctx, tmp, q->st.cur_ctx);
 		}
 
@@ -2920,6 +2928,7 @@ void thread_cancel_all(prolog *pl)
 	for (;;) {
 		thread *found = NULL;
 		bool detached_pending = false;
+		prolog_lock(pl);					// a detached thread unlinks itself as it retires
 
 		for_each_thread(pl, t) {
 			if (t == pl->main_thread)
@@ -2933,6 +2942,8 @@ void thread_cancel_all(prolog *pl)
 			if (t->is_detached && t->is_active)
 				detached_pending = true;
 		}
+
+		prolog_unlock(pl);
 
 		if (found) {
 			if (!cancel_and_join(found->id, deadline))
