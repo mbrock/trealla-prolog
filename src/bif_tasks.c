@@ -149,7 +149,7 @@ void do_yield_at(query *q, unsigned int time_in_ms)
 // then reports nothing readable at all - goes back on the retry timer,
 // where a doomed read costs a millisecond rather than the backstop.
 
-bool do_yield_on_stream(query *q, stream *str, bool is_write)
+static bool yield_on_stream(query *q, stream *str, bool is_write, int cap_ms)
 {
 #if USE_POLL
 	bool would_block = (errno == EAGAIN) || (errno == EWOULDBLOCK);
@@ -162,7 +162,7 @@ bool do_yield_on_stream(query *q, stream *str, bool is_write)
 			q->wait_fd = fd;
 			q->wait_events = is_write ? POLLOUT : POLLIN;
 			q->waiting_io = true;
-			return do_yield(q, SCHED_IO_BACKSTOP_MS);
+			return do_yield(q, cap_ms < SCHED_IO_BACKSTOP_MS ? cap_ms : SCHED_IO_BACKSTOP_MS);
 		}
 	}
 #else
@@ -171,6 +171,43 @@ bool do_yield_on_stream(query *q, stream *str, bool is_write)
 #endif
 
 	return do_yield(q, 1);
+}
+
+bool do_yield_on_stream(query *q, stream *str, bool is_write)
+{
+	return yield_on_stream(q, str, is_write, SCHED_IO_BACKSTOP_MS);
+}
+
+// The same for a read, bounded by the stream's timeout(_). A parked task
+// comes back to the read from the top, so the deadline lives on the
+// query, as task_recv/2's does, set when the read starts and kept while
+// q->retry says it is that read come round again. Input arriving starts
+// the clock afresh, as a wait in tpl_wait_fd() does. A read that times
+// out drops what it had read so far, as the non-task reads do.
+
+bool do_yield_on_read(query *q, stream *str)
+{
+	if (!q->is_task || (str->timeout_ms < 0))
+		return do_yield_on_stream(q, str, false);
+
+	uint64_t now = wall_time_in_usec() / 1000;
+
+	if (!q->retry || q->io_ready)
+		q->io_deadline = now + str->timeout_ms;
+
+	q->io_ready = false;
+
+	if (now >= q->io_deadline) {
+		if (str->data_owner == q) {
+			TPL_free(str->data);
+			str->data = NULL;
+		}
+
+		str->timed_out = true;
+		return throw_read_timeout(q, str);
+	}
+
+	return yield_on_stream(q, str, false, (int)(q->io_deadline - now));
 }
 
 // The scheduler holds every task in exactly one of three places: the
@@ -676,6 +713,7 @@ static void sched_wait(query *q, scheduler *s, uint64_t now, bool block)
 
 		sched_unlink(s, task);
 		sched_ready_push(s, task);
+		task->io_ready = woken;
 	}
 
 	sched_unlock(s);

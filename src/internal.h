@@ -1039,6 +1039,8 @@ struct query_ {
 	unsigned heap_idx;					// our slot in the timer heap
 	int wait_fd;						// descriptor we parked on, if waiting_io
 	uint64_t msg_deadline;				// absolute ms for a receive we parked in
+	uint64_t io_deadline;				// ... and for a read on a stream with a timeout(_)
+	bool io_ready;						// woken from the io list by input, not by a deadline
 	query *wait_next;					// link in a queue's msg_waiters
 	thread *waiting_on;					// ... and which queue that is
 	short wait_events;					// ... and what we are waiting for

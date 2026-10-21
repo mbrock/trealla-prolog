@@ -1,0 +1,9 @@
+getline_2: timeout_error fast
+get_char_2: timeout_error fast
+read_term_2: timeout_error fast
+zero_silent: timeout_error fast
+zero_with_input: success fast
+data_in_time: success fast
+infinite: success fast
+http_gaps_within_timeout: success fast
+http_gap_past_timeout: timeout_error fast
