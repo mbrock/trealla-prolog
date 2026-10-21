@@ -1,0 +1,6 @@
+clause2_body-representation_error(term)
+clause3_head-representation_error(term)
+clause3_body-representation_error(term)
+clause3_ref_head-representation_error(term)
+clause3_ref_body-representation_error(term)
+after-ok

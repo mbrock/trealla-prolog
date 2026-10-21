@@ -117,9 +117,13 @@ static bool bif_clause_3(query *q)
 				drop_choice(q);
 				break;
 			}
+
+			if (q->did_throw) return true;
 		} else {
 			if (match_clause(q, m, p1, p1_ctx, &body, DO_CLAUSE) != true)
 				break;
+
+			if (q->did_throw) return true;	// q->st.dbe and body are unset when unifying the head threw
 
 			char tmpbuf[128];
 			clause_ref_to_buf(q->st.dbe->dbgen_created, tmpbuf, sizeof(tmpbuf));
@@ -138,6 +142,8 @@ static bool bif_clause_3(query *q)
 			make_instr(&tmp, g_true_s, bif_iso_true_0, 0, 0);
 			ok = unify(q, p2, p2_ctx, &tmp, q->st.cur_ctx);
 		}
+
+		if (q->did_throw) return true;
 
 		if (ok) {
 			bool last_match;
@@ -192,6 +198,8 @@ static bool do_clause_2(query *q, enum clause_type type)
 			make_instr(&tmp, g_true_s, bif_iso_true_0, 0, 0);
 			ok = unify(q, p2, p2_ctx, &tmp, q->st.cur_ctx);
 		}
+
+		if (q->did_throw) return true;
 
 		if (ok) {
 			bool last_match = !has_next_key(q);
