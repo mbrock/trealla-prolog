@@ -96,7 +96,7 @@ static bool bif_clause_3(query *q)
 	const frame *f = GET_CURR_FRAME();
 
 	for (;;) {
-		clause *cl;
+		cell *body;
 
 		if (!is_var(p3)) {
 			rule *r = find_in_db(m ? m : q->st.m, clause_ref_from_buf(C_STR(q, p3)));
@@ -106,16 +106,19 @@ static bool bif_clause_3(query *q)
 
 			CHECKED(push_choice(q));
 			q->st.dbe = r;
-			cl = &r->cl;
-			cell *c = cl->cells;
-			cell *head = get_head(c);
 
-			if (!unify(q, p1, p1_ctx, head, q->st.cur_ctx)) {
+			// A renamed copy, as match_clause() makes, so the clause's variables are not the caller's slots.
+
+			cell *tmp = import_term(q, r->cl.cells, q->st.cur_ctx);
+			CHECKED(tmp);
+			body = get_body(tmp);
+
+			if (!unify(q, p1, p1_ctx, get_head(tmp), q->st.cur_ctx)) {
 				drop_choice(q);
 				break;
 			}
 		} else {
-			if (match_clause(q, m, p1, p1_ctx, NULL, DO_CLAUSE) != true)
+			if (match_clause(q, m, p1, p1_ctx, &body, DO_CLAUSE) != true)
 				break;
 
 			char tmpbuf[128];
@@ -124,11 +127,8 @@ static bool bif_clause_3(query *q)
 			make_cstring(&tmp, tmpbuf);
 			unify(q, p3, p3_ctx, &tmp, q->st.cur_ctx);
 			unshare_cell(&tmp);
-			cl = &q->st.dbe->cl;
 		}
 
-		cell *c = cl->cells;
-		cell *body = get_body(c);
 		bool ok;
 
 		if (body)
