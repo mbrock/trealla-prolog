@@ -6,6 +6,13 @@ partial_line: timeout_error fast
 term_continuation: timeout_error fast
 data_in_time: success fast
 getlines_2: timeout_error fast
+zero_with_input: success fast
+zero_silent: timeout_error fast
+negative: timeout_error fast
+rational: timeout_error fast
+huge_float: time_limit_exceeded fast
+huge_bigint: time_limit_exceeded fast
+not_a_number: error(type_error(float,foo),set_stream/2) fast
 second_timeout: timeout_error fast
 alarm_first: time_limit_exceeded fast
 infinite: time_limit_exceeded fast

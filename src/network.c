@@ -420,7 +420,8 @@ static void tpl_set_blocking(stream *str)
 }
 
 // A TLS socket stays blocking under SSL_read(), so its timeout(_) is the
-// kernel's receive timeout rather than tpl_wait_fd()'s deadline.
+// kernel's receive timeout rather than tpl_wait_fd()'s deadline. There a
+// zero means none, so a timeout of 0 becomes the shortest it can say.
 
 void tpl_set_read_timeout(stream *str)
 {
@@ -428,11 +429,19 @@ void tpl_set_read_timeout(stream *str)
 	if (!str->ssl || !str->fp_in)
 		return;
 
+	int ms = str->timeout_ms;
 #if defined(_WIN32)
-	DWORD tv = str->timeout_ms;
+	DWORD tv = ms < 0 ? 0 : ms ? (DWORD)ms : 1;
 	setsockopt((SOCKET)fileno(str->fp_in), SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
 #else
-	struct timeval tv = { .tv_sec = str->timeout_ms / 1000, .tv_usec = (str->timeout_ms % 1000) * 1000 };
+	struct timeval tv = { 0, 0 };
+
+	if (ms > 0) {
+		tv.tv_sec = ms / 1000;
+		tv.tv_usec = (ms % 1000) * 1000;
+	} else if (!ms)
+		tv.tv_usec = 1;
+
 	setsockopt(fileno(str->fp_in), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 #endif
 #else
@@ -590,7 +599,7 @@ size_t tpl_write(const void *ptr, size_t nbytes, stream *str)
 
 static void ssl_check_timeout(stream *str, int rlen)
 {
-	if (!str->timeout_ms)
+	if (str->timeout_ms < 0)
 		return;
 
 	int err = SSL_get_error((SSL*)str->sslptr, rlen);
@@ -816,7 +825,7 @@ static uint64_t read_deadline(stream *str)
 
 	str->timed_out = false;
 
-	if (!str->timeout_ms)
+	if (str->timeout_ms < 0)
 		return 0;
 
 	return monotonic_time_in_usec() + (uint64_t)str->timeout_ms * 1000;

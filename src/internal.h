@@ -782,7 +782,7 @@ struct stream_ {
 	char *wbuf;							// a task's parked write, see write_all()
 	const query *wbuf_owner;			// ... and whose it is
 	const query *data_owner;			// whose partial read str->data is
-	unsigned timeout_ms;
+	int timeout_ms;						// a read's limit; 0 times out unless input is waiting, -1 is none
 	bool timed_out;						// the last read outlasted timeout_ms, for throw_read_timeout()
 	size_t data_len, alloc_nbytes, wbuf_len, wbuf_pos;
 	size_t str_pos;						// an open_string/2 stream's read offset into sb

@@ -424,7 +424,7 @@ int new_stream(prolog *pl)
 		if (str->is_active)
 			continue;
 
-		str->timeout_ms = 0;
+		str->timeout_ms = -1;
 		str->timed_out = false;
 		str->is_closing = false;
 		str->is_pipe = false;
@@ -7337,18 +7337,33 @@ static bool set_stream_property(query *q, int n, cell *c, pl_ctx c_ctx)
 			return throw_error(q, name, name_ctx, "instantiation_error", "stream_option");
 
 		if (is_atom(name) && !CMP_STRING_TO_CSTR(q, name, "infinite")) {
-			str->timeout_ms = 0;
+			str->timeout_ms = -1;
 			tpl_set_read_timeout(str);
 			return true;
 		}
 
 		if (!is_number(name))
-			return throw_error(q, c, c_ctx, "domain_error", "stream_property");
+			return throw_error(q, name, name_ctx, "type_error", "float");
 
-		// Zero means none, so a positive timeout waits at least a millisecond.
+		// As in SWI: whole milliseconds, capped at INT_MAX of them, and
+		// zero, negative or NaN times out at once if nothing is waiting.
 
-		double secs = is_float(name) ? get_float(name) : get_smallint(name);
-		str->timeout_ms = secs > 0 ? (secs * 1000 < 1 ? 1 : (unsigned)(secs * 1000)) : 0;
+		double secs;
+
+		if (is_float(name))
+			secs = get_float(name);
+		else if (is_rational(name)) {
+			double num, den;
+			mp_int_to_double(&name->val_bigint->irat.num, &num);
+			mp_int_to_double(&name->val_bigint->irat.den, &den);
+			secs = num / den;
+		} else if (is_bigint(name))
+			mp_int_to_double(&name->val_bigint->ival, &secs);
+		else
+			secs = get_smallint(name);
+
+		double ms = secs * 1000;
+		str->timeout_ms = !(ms > 0) ? 0 : (ms >= INT_MAX) ? INT_MAX : (int)ms;
 		tpl_set_read_timeout(str);
 	}
 
