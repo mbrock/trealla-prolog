@@ -783,6 +783,7 @@ struct stream_ {
 	const query *wbuf_owner;			// ... and whose it is
 	const query *data_owner;			// whose partial read str->data is
 	unsigned timeout_ms;
+	bool timed_out;						// the last read outlasted timeout_ms, for throw_read_timeout()
 	size_t data_len, alloc_nbytes, wbuf_len, wbuf_pos;
 	size_t str_pos;						// an open_string/2 stream's read offset into sb
 	int ungetch, srclen, chan, idx, port;
@@ -1217,6 +1218,7 @@ struct parser_ {
 	prolog *pl;
 	FILE *fp;
 	stream *strm;						// an open_string/2 stream, which has no fp
+	stream *sock;						// the socket stream fp reads, for its timeout(_)
 	module *m;
 	clause *cl;
 	cell v;

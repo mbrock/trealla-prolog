@@ -10,12 +10,13 @@ extern int tpl_domain_connect(const char *name, bool is_udp);
 
 extern int tpl_accept(stream *str, char **addr, int *port);
 extern void tpl_set_nonblocking(stream *str);
+extern void tpl_set_read_timeout(stream *str);
 extern void *tpl_enable_ssl(int fd, const char *hostname, bool is_server, bool verify, const char *cafile, const char **reason);
 extern const char *tpl_servername(stream *str);
 extern size_t tpl_read(void *ptr, size_t len, stream *str);
 extern int tpl_getline(char **lineptr, size_t *n, query *q, stream *str);
 extern int tpl_getline_fp(char **lineptr, size_t *n, FILE *fp);
-extern int tpl_getline_nb(char **lineptr, size_t *n, query *q, FILE *fp, FILE *fp_flush);
+extern int tpl_getline_nb(char **lineptr, size_t *n, query *q, FILE *fp, FILE *fp_flush, stream *str);
 extern int tpl_getc(stream *str);
 extern size_t tpl_write(const void *ptr, size_t nbytes, stream *str);
 extern int tpl_close(stream *str);
@@ -30,7 +31,7 @@ extern unsigned tpl_host_addresses(const char *hostname, char ips[][64], unsigne
 extern int get_local_port(int clientSock);
 extern const char *get_local_hostname(char *hostname_buffer, size_t buffer_size);
 
-extern bool tpl_wait_fd_readable(query *q, int fd);
+extern bool tpl_wait_fd_readable(query *q, int fd, stream *str);
 extern bool tpl_wait_fd_writable(query *q, int fd);
 
 // An open_string/2 stream's reads, served from its sb.

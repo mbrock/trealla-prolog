@@ -261,7 +261,7 @@ static bool bif_sys_accept_2(query *q)
 			break;
 		}
 
-		if (!q->is_task && !tpl_wait_fd_readable(q, fileno(str->fp_in)))
+		if (!q->is_task && !tpl_wait_fd_readable(q, fileno(str->fp_in), NULL))
 			return throw_timeout(q);
 
 		if (str->is_closing || !str->is_active || !str->fp_in) {

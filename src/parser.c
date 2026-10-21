@@ -4420,29 +4420,24 @@ inline static bool is_matching_pair(int ch, int next_ch, int lh, int rh)
 	return (ch == lh) && (next_ch == rh);
 }
 
-// Same as getline(), but for a socket-backed parser waits in short,
-// alarm-aware poll() slices first - see tpl_wait_fd_readable() - and
-// then reads the line with tpl_getline_nb() rather than
-// tpl_getline_fp(): a socket fd is non-blocking now, and getc()'s EOF on
-// EAGAIN is indistinguishable there from a real end of file, so the
-// plain version silently returns a half-arrived line as though it were
-// whole. Everything past a term's first line is read here, so a term
-// whose closing ".\n" lands in a later packet than its body used to be
-// truncated into a syntax error - see the linda library's tests.
+// Same as getline(), but for a socket-backed parser reads the line with
+// tpl_getline_nb() rather than tpl_getline_fp(): a socket fd is
+// non-blocking now, and getc()'s EOF on EAGAIN is indistinguishable
+// there from a real end of file, so the plain version silently returns a
+// half-arrived line as though it were whole. Everything past a term's
+// first line is read here, so a term whose closing ".\n" lands in a
+// later packet than its body used to be truncated into a syntax error -
+// see the linda library's tests. tpl_getline_nb() waits only on EAGAIN,
+// in alarm-aware poll() slices - see tpl_wait_fd_readable(); polling the
+// fd before reading would miss a line already in the FILE's buffer.
 
 static ssize_t getline_interruptible(parser *p)
 {
 	if (p->strm)
 		return tpl_getline(&p->save_line, &p->n_line, p->q, p->strm);
 
-	if (p->is_socket && p->q) {
-		if (!tpl_wait_fd_readable(p->q, fileno(p->fp))) {
-			errno = EINTR;
-			return -1;
-		}
-
-		return tpl_getline_nb(&p->save_line, &p->n_line, p->q, p->fp, NULL);
-	}
+	if (p->is_socket && p->q)
+		return tpl_getline_nb(&p->save_line, &p->n_line, p->q, p->fp, NULL, p->sock);
 
 	return tpl_getline_fp(&p->save_line, &p->n_line, p->fp);
 }

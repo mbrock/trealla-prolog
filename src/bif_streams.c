@@ -425,6 +425,7 @@ int new_stream(prolog *pl)
 			continue;
 
 		str->timeout_ms = 0;
+		str->timed_out = false;
 		str->is_closing = false;
 		str->is_pipe = false;
 		str->is_popen = false;
@@ -1888,6 +1889,20 @@ static bool parse_read_params(query *q, stream *str, cell *c, pl_ctx c_ctx, cell
 	return true;
 }
 
+// A read that came back interrupted drops the term so far, as SWI does,
+// and the next starts on a fresh line: srcptr may point into a save_line
+// the interrupted read has since overwritten or moved.
+
+static bool read_term_interrupted(query *q, stream *str)
+{
+	str->p->error = false;
+	str->p->do_read_term = false;
+	str->p->did_getline = false;
+	str->p->srcptr = NULL;
+	stream_clearerr(str);
+	return throw_read_timeout(q, str);
+}
+
 bool do_read_term(query *q, stream *str, cell *p1, pl_ctx p1_ctx, cell *p2, pl_ctx p2_ctx, char *src)
 {
 	if (!str->p) {
@@ -1897,6 +1912,7 @@ bool do_read_term(query *q, stream *str, cell *p1, pl_ctx p1_ctx, cell *p2, pl_c
 		str->p->fp = str->is_string ? NULL : str->fp;
 		str->p->strm = str->is_string ? str : NULL;
 		str->p->is_socket = str->is_socket && !str->ssl;
+		str->p->sock = str->p->is_socket ? str : NULL;
 		if (q->top) str->p->no_fp = q->top->no_fp;
 	} else
 		parser_reset(str->p);
@@ -1944,10 +1960,8 @@ bool do_read_term(query *q, stream *str, cell *p1, pl_ctx p1_ctx, cell *p2, pl_c
 				return do_yield_on_stream(q, str, false);
 			}
 
-			if (errno == EINTR) {
-				stream_clearerr(str);
-				return throw_timeout(q);
-			}
+			if (errno == EINTR)
+				return read_term_interrupted(q, str);
 
 			str->p->srcptr = "";
 		} else
@@ -1958,10 +1972,8 @@ bool do_read_term(query *q, stream *str, cell *p1, pl_ctx p1_ctx, cell *p2, pl_c
 		errno = 0;	// FIX: reset before parse read so a stale EINTR isn't misread
 		char *src = (char*)eat_space(str->p);
 
-		if (errno == EINTR) {
-			stream_clearerr(str);
-			return throw_timeout(q);
-		}
+		if (errno == EINTR)
+			return read_term_interrupted(q, str);
 
 		if (str->p->error)
 			return throw_error(q, q->st.instr, q->st.cur_ctx,
@@ -1984,10 +1996,8 @@ bool do_read_term(query *q, stream *str, cell *p1, pl_ctx p1_ctx, cell *p2, pl_c
 					return do_yield_on_stream(q, str, false);
 				}
 
-				if (errno == EINTR) {
-					stream_clearerr(str);
-					return throw_timeout(q);
-				}
+				if (errno == EINTR)
+					return read_term_interrupted(q, str);
 
 				str->p->srcptr = "";
 				str->at_end_of_file = str->eof_action != eof_action_reset;
@@ -2070,8 +2080,15 @@ bool do_read_term(query *q, stream *str, cell *p1, pl_ctx p1_ctx, cell *p2, pl_c
 
 	frame *f = GET_CURR_FRAME();
 	str->p->read_term_slots = f->actual_slots;
+	str->timed_out = false;
+	errno = 0;
 	tokenize(str->p, false, false);
 	str->p->read_term_slots = 0;
+
+	// A later line of the term that timed out or was interrupted is that, not bad syntax.
+
+	if (str->p->error && (str->timed_out || (errno == EINTR)))
+		return read_term_interrupted(q, str);
 
 	if (str->p->error || !str->p->end_of_term) {
 		str->p->error = false;
@@ -2359,7 +2376,7 @@ static int retry_getc(void *ctx0)
 
 		stream_clearerr(str);
 
-		if (!tpl_wait_fd_readable(q, stream_fileno(str)))
+		if (!tpl_wait_fd_readable(q, stream_fileno(str), str))
 			return EOF;	// errno == EINTR, set by tpl_wait_fd_readable()
 	}
 }
@@ -3171,7 +3188,7 @@ static bool bif_iso_get_char_1(query *q)
 
 	if (errno == EINTR) {
 		stream_clearerr(str);
-		return throw_timeout(q);
+		return throw_read_timeout(q, str);
 	}
 
 	if (q->is_task && !stream_eof(str) && stream_error(str)) {
@@ -3248,7 +3265,7 @@ static bool bif_iso_get_char_2(query *q)
 
 	if (errno == EINTR) {
 		stream_clearerr(str);
-		return throw_timeout(q);
+		return throw_read_timeout(q, str);
 	}
 
 	if (q->is_task && !stream_eof(str) && stream_error(str)) {
@@ -3325,7 +3342,7 @@ static bool bif_iso_get_code_1(query *q)
 
 	if (errno == EINTR) {
 		stream_clearerr(str);
-		return throw_timeout(q);
+		return throw_read_timeout(q, str);
 	}
 
 	if (q->is_task && !stream_eof(str) && stream_error(str)) {
@@ -3405,7 +3422,7 @@ static bool bif_iso_get_code_2(query *q)
 
 	if (errno == EINTR) {
 		stream_clearerr(str);
-		return throw_timeout(q);
+		return throw_read_timeout(q, str);
 	}
 
 	if (q->is_task && !stream_eof(str) && stream_error(str)) {
@@ -3478,7 +3495,7 @@ static bool bif_iso_get_byte_1(query *q)
 
 	if (errno == EINTR) {
 		stream_clearerr(str);
-		return throw_timeout(q);
+		return throw_read_timeout(q, str);
 	}
 
 	if (q->is_task && !stream_eof(str) && stream_error(str)) {
@@ -3546,7 +3563,7 @@ static bool bif_iso_get_byte_2(query *q)
 
 	if (errno == EINTR) {
 		stream_clearerr(str);
-		return throw_timeout(q);
+		return throw_read_timeout(q, str);
 	}
 
 	if (q->is_task && !stream_eof(str) && stream_error(str)) {
@@ -3769,7 +3786,7 @@ static bool bif_iso_peek_char_1(query *q)
 
 	if (errno == EINTR) {
 		stream_clearerr(str);
-		return throw_timeout(q);
+		return throw_read_timeout(q, str);
 	}
 
 	if (q->is_task && !stream_eof(str) && stream_error(str)) {
@@ -3825,7 +3842,7 @@ static bool bif_iso_peek_char_2(query *q)
 
 	if (errno == EINTR) {
 		stream_clearerr(str);
-		return throw_timeout(q);
+		return throw_read_timeout(q, str);
 	}
 
 	if (q->is_task && !stream_eof(str) && stream_error(str)) {
@@ -3883,7 +3900,7 @@ static bool bif_iso_peek_code_1(query *q)
 
 	if (errno == EINTR) {
 		stream_clearerr(str);
-		return throw_timeout(q);
+		return throw_read_timeout(q, str);
 	}
 
 	if (q->is_task && !stream_eof(str) && stream_error(str)) {
@@ -3943,7 +3960,7 @@ static bool bif_iso_peek_code_2(query *q)
 
 	if (errno == EINTR) {
 		stream_clearerr(str);
-		return throw_timeout(q);
+		return throw_read_timeout(q, str);
 	}
 
 	if (q->is_task && !stream_eof(str) && stream_error(str)) {
@@ -3997,7 +4014,7 @@ static bool bif_iso_peek_byte_1(query *q)
 
 	if (errno == EINTR) {
 		stream_clearerr(str);
-		return throw_timeout(q);
+		return throw_read_timeout(q, str);
 	}
 
 	if (q->is_task && !stream_eof(str) && stream_error(str)) {
@@ -4052,7 +4069,7 @@ static bool bif_iso_peek_byte_2(query *q)
 
 	if (errno == EINTR) {
 		stream_clearerr(str);
-		return throw_timeout(q);
+		return throw_read_timeout(q, str);
 	}
 
 	if (q->is_task && !stream_eof(str) && stream_error(str)) {
@@ -4251,7 +4268,7 @@ static bool bif_sys_read_term_from_chars_4(query *q)
 
 	if (errno == EINTR) {
 		stream_clearerr(str);
-		return throw_timeout(q);
+		return throw_read_timeout(q, str);
 	}
 
 	if (str->p->error) {
@@ -4567,7 +4584,7 @@ static bool bif_edin_redo_1(query *q)
 
 		if (errno == EINTR) {
 			stream_clearerr(str);
-			return throw_timeout(q);
+			return throw_read_timeout(q, str);
 		}
 
 		if (stream_eof(str)) {
@@ -4606,7 +4623,7 @@ static bool bif_edin_redo_2(query *q)
 
 		if (errno == EINTR) {
 			stream_clearerr(str);
-			return throw_timeout(q);
+			return throw_read_timeout(q, str);
 		}
 
 		if (stream_eof(str)) {
@@ -4783,7 +4800,7 @@ static bool bif_read_line_to_string_2(query *q)
 
 		if (errno == EINTR) {
 			stream_clearerr(str);
-			return throw_timeout(q);
+			return throw_read_timeout(q, str);
 		}
 
 		cell tmp;
@@ -4794,7 +4811,7 @@ static bool bif_read_line_to_string_2(query *q)
 
 	if (errno == EINTR) {
 		stream_clearerr(str);
-		return throw_timeout(q);
+		return throw_read_timeout(q, str);
 	}
 
 	len = strlen(line);
@@ -4841,7 +4858,7 @@ static bool bif_read_line_to_codes_2(query *q)
 
 		if (errno == EINTR) {
 			stream_clearerr(str);
-			return throw_timeout(q);
+			return throw_read_timeout(q, str);
 		}
 
 		cell tmp;
@@ -4852,7 +4869,7 @@ static bool bif_read_line_to_codes_2(query *q)
 
 	if (errno == EINTR) {
 		stream_clearerr(str);
-		return throw_timeout(q);
+		return throw_read_timeout(q, str);
 	}
 
 	len = strlen(line);
@@ -5412,6 +5429,12 @@ static bool bif_getlines_1(query *q)
 	}
 
 	TPL_free(line);
+
+	if (errno == EINTR) {
+		stream_clearerr(str);
+		return throw_read_timeout(q, str);
+	}
+
 	cell *l = end_list(q);
 	CHECKED(l);
 	unify(q, p1, p1_ctx, l, q->st.cur_ctx);
@@ -5447,6 +5470,12 @@ static bool bif_getlines_2(query *q)
 	}
 
 	TPL_free(line);
+
+	if (errno == EINTR) {
+		stream_clearerr(str);
+		return throw_read_timeout(q, str);
+	}
+
 	cell *l = end_list(q);
 	CHECKED(l);
 	unify(q, p1, p1_ctx, l, q->st.cur_ctx);
@@ -5492,6 +5521,12 @@ static bool bif_getlines_3(query *q)
 	}
 
 	TPL_free(line);
+
+	if (errno == EINTR) {
+		stream_clearerr(str);
+		return throw_read_timeout(q, str);
+	}
+
 	cell *l = end_list(q);
 	CHECKED(l);
 	unify(q, p1, p1_ctx, l, q->st.cur_ctx);
@@ -5693,7 +5728,7 @@ static bool bif_getline_1(query *q)
 
 		if (errno == EINTR) {
 			stream_clearerr(str);
-			return throw_timeout(q);
+			return throw_read_timeout(q, str);
 		}
 
 		return false;
@@ -5701,7 +5736,7 @@ static bool bif_getline_1(query *q)
 
 	if (errno == EINTR) {
 		stream_clearerr(str);
-		return throw_timeout(q);
+		return throw_read_timeout(q, str);
 	}
 
 	len = strlen(line);
@@ -5746,12 +5781,17 @@ static bool bif_getline_2(query *q)
 			return do_yield_on_stream(q, str, false);
 		}
 
+		if (errno == EINTR) {
+			stream_clearerr(str);
+			return throw_read_timeout(q, str);
+		}
+
 		return false;
 	}
 
 	if (errno == EINTR) {
 		stream_clearerr(str);
-		return throw_timeout(q);
+		return throw_read_timeout(q, str);
 	}
 
 	len = strlen(line);
@@ -5794,12 +5834,17 @@ static bool bif_getline_3(query *q)
 			return do_yield_on_stream(q, str, false);
 		}
 
+		if (errno == EINTR) {
+			stream_clearerr(str);
+			return throw_read_timeout(q, str);
+		}
+
 		return false;
 	}
 
 	if (errno == EINTR) {
 		stream_clearerr(str);
-		return throw_timeout(q);
+		return throw_read_timeout(q, str);
 	}
 
 	len = strlen(line);
@@ -6356,7 +6401,7 @@ static bool bif_sys_get_chars_3(query *q)
 
 			if (errno == EINTR) {
 				stream_clearerr(str);
-				return throw_timeout(q);
+				return throw_read_timeout(q, str);
 			}
 
 			if (stream_eof(str)) {
@@ -6426,7 +6471,7 @@ static bool bif_sys_get_chars_3(query *q)
 
 		if (errno == EINTR) {
 			stream_clearerr(str);
-			return throw_timeout(q);
+			return throw_read_timeout(q, str);
 		}
 
 		if (stream_eof(str)) {
@@ -6494,7 +6539,7 @@ static bool bif_sys_bread_3(query *q)
 
 			if (errno == EINTR) {
 				stream_clearerr(str);
-				return throw_timeout(q);
+				return throw_read_timeout(q, str);
 			}
 
 			str->data_len += nbytes;
@@ -6526,10 +6571,10 @@ static bool bif_sys_bread_3(query *q)
 			if (stream_error(str) && ((errno == EAGAIN) || (errno == EWOULDBLOCK))) {
 				stream_clearerr(str);
 
-				if (!tpl_wait_fd_readable(q, stream_fileno(str))) {
+				if (!tpl_wait_fd_readable(q, stream_fileno(str), str)) {
 					TPL_free(str->data);
 					str->data = NULL;
-					return throw_timeout(q);	// errno == EINTR
+					return throw_read_timeout(q, str);	// errno == EINTR
 				}
 			}
 		}
@@ -6557,6 +6602,14 @@ static bool bif_sys_bread_3(query *q)
 		}
 
 		size_t nbytes = tpl_read(str->data, str->alloc_nbytes, str);
+
+		if (errno == EINTR) {
+			stream_clearerr(str);
+			TPL_free(str->data);
+			str->data = NULL;
+			return throw_read_timeout(q, str);
+		}
+
 		str->data[nbytes] = '\0';
 		str->data = TPL_realloc(str->data, nbytes+1);
 		CHECKED(str->data);
@@ -6584,6 +6637,14 @@ static bool bif_sys_bread_3(query *q)
 	for (;;) {
 		size_t len = str->alloc_nbytes - str->data_len;
 		size_t nbytes = tpl_read(str->data+str->data_len, len, str);
+
+		if (errno == EINTR) {
+			stream_clearerr(str);
+			TPL_free(str->data);
+			str->data = NULL;
+			return throw_read_timeout(q, str);
+		}
+
 		str->data_len += nbytes;
 		str->data[str->data_len] = '\0';
 
@@ -6597,10 +6658,10 @@ static bool bif_sys_bread_3(query *q)
 			if (q->is_task)
 				return do_yield_on_stream(q, str, false);
 
-			if (!tpl_wait_fd_readable(q, stream_fileno(str))) {
+			if (!tpl_wait_fd_readable(q, stream_fileno(str), str)) {
 				TPL_free(str->data);
 				str->data = NULL;
-				return throw_timeout(q);
+				return throw_read_timeout(q, str);
 			}
 
 			continue;
@@ -7275,13 +7336,20 @@ static bool set_stream_property(query *q, int n, cell *c, pl_ctx c_ctx)
 		if (is_var(name))
 			return throw_error(q, name, name_ctx, "instantiation_error", "stream_option");
 
+		if (is_atom(name) && !CMP_STRING_TO_CSTR(q, name, "infinite")) {
+			str->timeout_ms = 0;
+			tpl_set_read_timeout(str);
+			return true;
+		}
+
 		if (!is_number(name))
 			return throw_error(q, c, c_ctx, "domain_error", "stream_property");
 
-		if (is_float(name))
-			str->timeout_ms = get_float(name) * 1000;
-		else
-			str->timeout_ms = get_smallint(name) * 1000;
+		// Zero means none, so a positive timeout waits at least a millisecond.
+
+		double secs = is_float(name) ? get_float(name) : get_smallint(name);
+		str->timeout_ms = secs > 0 ? (secs * 1000 < 1 ? 1 : (unsigned)(secs * 1000)) : 0;
+		tpl_set_read_timeout(str);
 	}
 
 	return true;

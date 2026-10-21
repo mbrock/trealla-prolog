@@ -54,9 +54,9 @@ int tpl_getline_fp(char **lineptr, size_t *n, FILE *fp)
 // Only parser.c needs this here: with no sockets nothing is ever
 // non-blocking, so a plain line read is the whole of it.
 
-int tpl_getline_nb(char **lineptr, size_t *n, query *q, FILE *fp, FILE *fp_flush)
+int tpl_getline_nb(char **lineptr, size_t *n, query *q, FILE *fp, FILE *fp_flush, stream *str)
 {
-	(void) q;
+	(void) q; (void) str;
 
 	if (fp_flush)
 		fflush(fp_flush);
@@ -95,6 +95,7 @@ int tpl_accept(stream *str, char **addr, int *port)
 }
 
 void tpl_set_nonblocking(stream *str) { (void)str; }
+void tpl_set_read_timeout(stream *str) { (void)str; }
 
 void *tpl_enable_ssl(int fd, const char *hostname, bool is_server, bool verify, const char *cafile, const char **reason)
 {
@@ -275,9 +276,9 @@ const char *get_local_hostname(char *hostname, size_t size)
 	return NULL;
 }
 
-bool tpl_wait_fd_readable(query *q, int fd)
+bool tpl_wait_fd_readable(query *q, int fd, stream *str)
 {
-	(void)q; (void)fd;
+	(void)q; (void)fd; (void)str;
 	return true;
 }
 

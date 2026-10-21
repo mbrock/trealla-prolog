@@ -419,6 +419,27 @@ static void tpl_set_blocking(stream *str)
 #endif
 }
 
+// A TLS socket stays blocking under SSL_read(), so its timeout(_) is the
+// kernel's receive timeout rather than tpl_wait_fd()'s deadline.
+
+void tpl_set_read_timeout(stream *str)
+{
+#if USE_OPENSSL && !defined(__wasi__)
+	if (!str->ssl || !str->fp_in)
+		return;
+
+#if defined(_WIN32)
+	DWORD tv = str->timeout_ms;
+	setsockopt((SOCKET)fileno(str->fp_in), SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+#else
+	struct timeval tv = { .tv_sec = str->timeout_ms / 1000, .tv_usec = (str->timeout_ms % 1000) * 1000 };
+	setsockopt(fileno(str->fp_in), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+#endif
+#else
+	(void)str;
+#endif
+}
+
 #if USE_OPENSSL
 // A client gets its own context, so verification settings never leak into
 // the server's shared one, and the SSL keeps it alive until SSL_free().
@@ -563,12 +584,42 @@ size_t tpl_write(const void *ptr, size_t nbytes, stream *str)
 	}
 }
 
+#if USE_OPENSSL
+// An SSL_read() that the receive timeout above cut short reports as a
+// timed-out wait does: errno = EINTR, with str->timed_out marked.
+
+static void ssl_check_timeout(stream *str, int rlen)
+{
+	if (!str->timeout_ms)
+		return;
+
+	int err = SSL_get_error((SSL*)str->sslptr, rlen);
+
+	if ((err != SSL_ERROR_WANT_READ) && (err != SSL_ERROR_SYSCALL))
+		return;
+
+#if defined(_WIN32)
+	int wsa = WSAGetLastError();
+
+	if ((wsa != WSAETIMEDOUT) && (wsa != WSAEWOULDBLOCK))
+		return;
+#else
+	if ((errno != EAGAIN) && (errno != EWOULDBLOCK))
+		return;
+#endif
+
+	str->timed_out = true;
+	errno = EINTR;
+}
+#endif
+
 int tpl_getc(stream *str)
 {
 	if (str->is_string)
 		return string_getc(str);
 
 	errno = 0;	// FIX: reset so a stale EINTR from an earlier call isn't misread as an interrupt
+	str->timed_out = false;
 #if USE_OPENSSL
 	if (str->ssl) {
 		size_t len = 1;
@@ -589,6 +640,8 @@ int tpl_getc(stream *str)
 		// FIX 6: 0 == clean shutdown, <0 == error; either way return EOF rather
 		// than an uninitialised byte.
 		if (rlen <= 0) {
+			ssl_check_timeout(str, rlen);
+
 			if (errno == EINTR)
 				clearerr(str->fp_in);
 
@@ -618,6 +671,7 @@ size_t tpl_read(void *ptr, size_t len, stream *str)
 		return string_read(ptr, len, str);
 
 	errno = 0;	// FIX: reset so a stale EINTR from an earlier call isn't misread as an interrupt
+	str->timed_out = false;
 #if USE_OPENSSL
 	if (str->ssl) {
 		char *dst = ptr;
@@ -633,9 +687,14 @@ size_t tpl_read(void *ptr, size_t len, stream *str)
 
 		int ok = SSL_read((SSL*)str->sslptr, ptr, len);
 
+		if (ok <= 0)
+			ssl_check_timeout(str, ok);
+
+		// Nothing read, not EOF, which as a size_t would be a huge length.
+
 		if (errno == EINTR) {
 			clearerr(str->fp_in);
-			return EOF;
+			return 0;
 		}
 
 		return ok < 0 ? 0 : (size_t)ok;			// avoid returning a huge size_t on error
@@ -645,11 +704,11 @@ size_t tpl_read(void *ptr, size_t len, stream *str)
 	if (str->is_socket && str->fp_out)
 		fflush(str->fp_out);
 
-	int ok = fread(ptr, 1, len, str->fp_in);
+	size_t ok = fread(ptr, 1, len, str->fp_in);
 
 	if (errno == EINTR) {
 		clearerr(str->fp_in);
-		ok = EOF;
+		ok = 0;
 	}
 
 	return ok;
@@ -721,18 +780,60 @@ int tpl_getline_fp(char **lineptr, size_t *n, FILE *fp)
 // uninterruptible blocking read/write (real SIGALRM used to do this via
 // EINTR - see DESIGN-GUSTTO.md). Sets errno = EINTR and returns false on
 // timeout/interrupt; true means the fd is ready for the direction asked.
+// A read also gives up once str's timeout(_), if it has one, runs out,
+// and marks str->timed_out for throw_read_timeout() to report.
+
+// The next slice, cut short by an alarm or the deadline; false when the deadline has passed.
+
+static bool next_wait_ms(query *q, uint64_t deadline, int *wait_ms)
+{
+	unsigned ms;
+	*wait_ms = next_alarm_delay(q, &ms) ? (int)ms : 250;
+
+	if (*wait_ms > 250)
+		*wait_ms = 250;
+
+	if (!deadline)
+		return true;
+
+	uint64_t now = monotonic_time_in_usec();
+
+	if (now >= deadline)
+		return false;
+
+	uint64_t left_ms = (deadline - now + 999) / 1000;
+
+	if (left_ms < (uint64_t)*wait_ms)
+		*wait_ms = (int)left_ms;
+
+	return true;
+}
+
+static uint64_t read_deadline(stream *str)
+{
+	if (!str)
+		return 0;
+
+	str->timed_out = false;
+
+	if (!str->timeout_ms)
+		return 0;
+
+	return monotonic_time_in_usec() + (uint64_t)str->timeout_ms * 1000;
+}
 
 #if defined(_WIN32)
 // select() rather than WSAPoll(): the fd here came from fileno() on a
 // stream fdopen()'d over a socket the way the rest of this file already
 // treats Windows sockets (see tpl_connect()/tpl_server()), and select()
 // needs no extra header beyond winsock2.h, already included above.
-static bool tpl_wait_fd(query *q, int fd, bool for_write)
+static bool tpl_wait_fd(query *q, int fd, bool for_write, stream *str)
 {
 	if (fd < 0)
 		return true;
 
 	SOCKET sock = (SOCKET)fd;
+	uint64_t deadline = read_deadline(str);
 
 	for (;;) {
 		if (interrupt_pending(q) || cancel_pending(q) || alert_pending(q)) {
@@ -740,11 +841,13 @@ static bool tpl_wait_fd(query *q, int fd, bool for_write)
 			return false;
 		}
 
-		unsigned ms;
-		int wait_ms = next_alarm_delay(q, &ms) ? (int)ms : 250;
+		int wait_ms;
 
-		if (wait_ms > 250)
-			wait_ms = 250;
+		if (!next_wait_ms(q, deadline, &wait_ms)) {
+			str->timed_out = true;
+			errno = EINTR;
+			return false;
+		}
 
 		fd_set fds;
 		FD_ZERO(&fds);
@@ -763,13 +866,15 @@ static bool tpl_wait_fd(query *q, int fd, bool for_write)
 	}
 }
 
-bool tpl_wait_fd_readable(query *q, int fd) { return tpl_wait_fd(q, fd, false); }
-bool tpl_wait_fd_writable(query *q, int fd) { return tpl_wait_fd(q, fd, true); }
+bool tpl_wait_fd_readable(query *q, int fd, stream *str) { return tpl_wait_fd(q, fd, false, str); }
+bool tpl_wait_fd_writable(query *q, int fd) { return tpl_wait_fd(q, fd, true, NULL); }
 #elif !defined(__wasi__)
-static bool tpl_wait_fd(query *q, int fd, bool for_write)
+static bool tpl_wait_fd(query *q, int fd, bool for_write, stream *str)
 {
 	if (fd < 0)
 		return true;
+
+	uint64_t deadline = read_deadline(str);
 
 	for (;;) {
 		if (interrupt_pending(q) || cancel_pending(q) || alert_pending(q)) {
@@ -777,11 +882,13 @@ static bool tpl_wait_fd(query *q, int fd, bool for_write)
 			return false;
 		}
 
-		unsigned ms;
-		int wait_ms = next_alarm_delay(q, &ms) ? (int)ms : 250;
+		int wait_ms;
 
-		if (wait_ms > 250)
-			wait_ms = 250;
+		if (!next_wait_ms(q, deadline, &wait_ms)) {
+			str->timed_out = true;
+			errno = EINTR;
+			return false;
+		}
 
 		struct pollfd pfd = { .fd = fd, .events = for_write ? POLLOUT : POLLIN };
 		int n = poll(&pfd, 1, wait_ms);
@@ -794,12 +901,12 @@ static bool tpl_wait_fd(query *q, int fd, bool for_write)
 	}
 }
 
-bool tpl_wait_fd_readable(query *q, int fd) { return tpl_wait_fd(q, fd, false); }
-bool tpl_wait_fd_writable(query *q, int fd) { return tpl_wait_fd(q, fd, true); }
+bool tpl_wait_fd_readable(query *q, int fd, stream *str) { return tpl_wait_fd(q, fd, false, str); }
+bool tpl_wait_fd_writable(query *q, int fd) { return tpl_wait_fd(q, fd, true, NULL); }
 #else
-bool tpl_wait_fd_readable(query *q, int fd)
+bool tpl_wait_fd_readable(query *q, int fd, stream *str)
 {
-	(void) q; (void) fd;
+	(void) q; (void) fd; (void) str;
 	return true;
 }
 
@@ -816,6 +923,7 @@ int tpl_getline(char **lineptr, size_t *n, query *q, stream *str)
 		return string_getline(lineptr, n, str);
 
 	errno = 0;	// FIX: reset so a stale EINTR from an earlier call isn't misread as an interrupt
+	str->timed_out = false;
 #if USE_OPENSSL
 	if (str->ssl) {
 		if (!*lineptr) {
@@ -834,6 +942,8 @@ int tpl_getline(char **lineptr, size_t *n, query *q, stream *str)
 				int rlen = SSL_read((SSL*)str->sslptr, str->srcbuf, MAX_STREAM_BUFLEN - 1);
 
 				if (rlen <= 0) {
+					ssl_check_timeout(str, rlen);
+
 					if (errno == EINTR)
 						return EOF;
 
@@ -895,7 +1005,7 @@ int tpl_getline(char **lineptr, size_t *n, query *q, stream *str)
 	// so only a genuine EAGAIN waits (alarm/interrupt-aware, via
 	// tpl_wait_fd_readable()) rather than either corrupting the read or
 	// blocking the OS thread the way a blocking-mode fd's getc() would.
-	return tpl_getline_nb(lineptr, n, q, str->fp_in, str->fp_out);
+	return tpl_getline_nb(lineptr, n, q, str->fp_in, str->fp_out, str);
 }
 
 // The EAGAIN-aware line read above, over a plain FILE* so the tokenizer
@@ -904,8 +1014,9 @@ int tpl_getline(char **lineptr, size_t *n, query *q, stream *str)
 // (parser.c) rather than from here, and that path must not mistake a
 // mid-line EAGAIN for end of line either. fp_flush is the write side to
 // push before each read attempt, as tpl_getc() does, or NULL for none.
+// str, if any, is the stream whose timeout(_) bounds each wait.
 
-int tpl_getline_nb(char **lineptr, size_t *n, query *q, FILE *fp, FILE *fp_flush)
+int tpl_getline_nb(char **lineptr, size_t *n, query *q, FILE *fp, FILE *fp_flush, stream *str)
 {
 	if (!*lineptr) {
 		*lineptr = TPL_malloc(*n = 128);
@@ -960,7 +1071,7 @@ int tpl_getline_nb(char **lineptr, size_t *n, query *q, FILE *fp, FILE *fp_flush
 
 		clearerr(fp);
 
-		if (!tpl_wait_fd_readable(q, fileno(fp)))
+		if (!tpl_wait_fd_readable(q, fileno(fp), str))
 			return -1;	// errno == EINTR, set by tpl_wait_fd_readable()
 	}
 

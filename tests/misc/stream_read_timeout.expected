@@ -1,0 +1,13 @@
+getline_2: timeout_error fast
+getline_3: timeout_error fast
+get_char_2: timeout_error fast
+read_term_2: timeout_error fast
+partial_line: timeout_error fast
+term_continuation: timeout_error fast
+data_in_time: success fast
+getlines_2: timeout_error fast
+second_timeout: timeout_error fast
+alarm_first: time_limit_exceeded fast
+infinite: time_limit_exceeded fast
+recover: timeout_error error(syntax_error(operator_expected),read_term/3) success
+http_open: timeout_error fast

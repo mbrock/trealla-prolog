@@ -293,6 +293,20 @@ inline static bool throw_timeout(query *q)
 	return throw_error(q, q->st.instr, q->st.cur_ctx, "time_limit_exceeded", "timed_out");
 }
 
+// The same for a read from str, which gives SWI's timeout_error if it outlasted the stream's timeout(_).
+
+inline static bool throw_read_timeout(query *q, stream *str)
+{
+	if (!str->timed_out || cancel_pending(q))
+		return throw_timeout(q);
+
+	str->timed_out = false;
+	cell tmp;
+	make_int(&tmp, str - q->pl->streams);
+	tmp.flags |= FLAG_INT_STREAM;
+	return throw_error(q, &tmp, q->st.cur_ctx, "timeout_error", "read");
+}
+
 inline static bool interrupt_pending(query *q)
 {
 	thread *self = q->thread_ptr ? q->thread_ptr : q->pl->main_thread;
