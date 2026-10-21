@@ -693,6 +693,66 @@ static bool throw_expansion_error(query *q, parser *p, cell *tmp)
 	return throw_error(q, tmp, q->st.cur_ctx, "syntax_error", desc);
 }
 
+// Compiles the clause copied into tmp and stores it first or last. *rp, when given, is the new rule, and stays NULL if this threw.
+
+static bool assert_clause(query *q, cell *tmp, bool at_front, rule **rp)
+{
+	pl_idx num_cells = tmp->num_cells;
+	parser *p = parser_create_sized(q->st.m, num_cells);
+	CHECKED(p);
+
+	p->cl->cidx = dup_cells(p->cl->cells, tmp, num_cells);
+
+	// The clause outlives the mapping any slice in it points into.
+	// Unsliced here, not in the tmp heap: this copy owns the reference the
+	// new string carries, and a slice had none for dup_cells() to share.
+
+	if (!unslice_cells(p->cl->cells, num_cells)) {
+		parser_destroy(p);
+		return throw_error(q, tmp, q->st.cur_ctx, "resource_error", "memory");
+	}
+
+	assign_vars(p, 0, true);
+
+	if (p->error) {
+		const bool too_many = p->vartab.num_vars >= MAX_VARS;
+		parser_destroy(p);
+		return throw_error(q, tmp, q->st.cur_ctx, "resource_error", too_many ? "max_vars" : "memory");
+	}
+
+	term_to_body(p);
+
+	if (p->error)
+		return throw_expansion_error(q, p, tmp);
+
+	cell *h = get_head(p->cl->cells);
+
+	prolog_lock_mod(q->pl, q->st.m);
+	rule *r = at_front ? asserta_to_db(q->st.m, p->cl->num_vars, p->cl->cells, false)
+		: assertz_to_db(q->st.m, p->cl->num_vars, p->cl->cells, false);
+	prolog_unlock_mod(q->pl, q->st.m);
+
+	p->cl->cidx = 0;
+
+	if (!r) {
+		// h points into p->cl, so copy it out BEFORE parser_destroy()
+		// frees that. Only the static-procedure error path reads h,
+		// which is why this stayed latent.
+
+		h = copy_term_to_heap(q, h, q->st.cur_ctx, false);
+		parser_destroy(p);
+		CHECKED(h);
+		return throw_error(q, h, q->st.cur_ctx, "permission_error", "modify,static_procedure");
+	}
+
+	parser_destroy(p);
+
+	if (rp)
+		*rp = r;
+
+	return true;
+}
+
 static bool bif_iso_asserta_1(query *q)
 {
 	GET_FIRST_ARG(p1,callable);
@@ -732,55 +792,7 @@ static bool bif_iso_asserta_1(query *q)
 		return throw_error(q, tmp2, q->st.cur_ctx, "type_error", "callable");
 	}
 
-	pl_idx num_cells = tmp->num_cells;
-	parser *p = parser_create_sized(q->st.m, num_cells);
-	CHECKED(p);
-
-	p->cl->cidx = dup_cells(p->cl->cells, tmp, num_cells);
-
-	// The clause outlives the mapping any slice in it points into.
-	// Unsliced here, not in the tmp heap: this copy owns the reference the
-	// new string carries, and a slice had none for dup_cells() to share.
-
-	if (!unslice_cells(p->cl->cells, num_cells)) {
-		parser_destroy(p);
-		return throw_error(q, tmp, q->st.cur_ctx, "resource_error", "memory");
-	}
-
-	assign_vars(p, 0, true);
-
-	if (p->error) {
-		const bool too_many = p->vartab.num_vars >= MAX_VARS;
-		parser_destroy(p);
-		return throw_error(q, tmp, q->st.cur_ctx, "resource_error", too_many ? "max_vars" : "memory");
-	}
-
-	term_to_body(p);
-
-	if (p->error)
-		return throw_expansion_error(q, p, tmp);
-
-	cell *h = get_head(p->cl->cells);
-
-	prolog_lock_mod(q->pl, q->st.m);
-	rule *r = asserta_to_db(q->st.m, p->cl->num_vars, p->cl->cells, false);
-	prolog_unlock_mod(q->pl, q->st.m);
-
-	p->cl->cidx = 0;
-
-	if (!r) {
-		// h points into p->cl, so copy it out BEFORE parser_destroy()
-		// frees that. Only the static-procedure error path reads h,
-		// which is why this stayed latent.
-
-		h = copy_term_to_heap(q, h, q->st.cur_ctx, false);
-		parser_destroy(p);
-		CHECKED(h);
-		return throw_error(q, h, q->st.cur_ctx, "permission_error", "modify,static_procedure");
-	}
-
-	parser_destroy(p);
-	return true;
+	return assert_clause(q, tmp, true, NULL);
 }
 
 static bool do_assertz_1(query *q)
@@ -822,55 +834,7 @@ static bool do_assertz_1(query *q)
 		return throw_error(q, tmp2, q->st.cur_ctx, "type_error", "callable");
 	}
 
-	pl_idx num_cells = tmp->num_cells;
-	parser *p = parser_create_sized(q->st.m, num_cells);
-	CHECKED(p);
-
-	p->cl->cidx = dup_cells(p->cl->cells, tmp, num_cells);
-
-	// The clause outlives the mapping any slice in it points into.
-	// Unsliced here, not in the tmp heap: this copy owns the reference the
-	// new string carries, and a slice had none for dup_cells() to share.
-
-	if (!unslice_cells(p->cl->cells, num_cells)) {
-		parser_destroy(p);
-		return throw_error(q, tmp, q->st.cur_ctx, "resource_error", "memory");
-	}
-
-	assign_vars(p, 0, true);
-
-	if (p->error) {
-		const bool too_many = p->vartab.num_vars >= MAX_VARS;
-		parser_destroy(p);
-		return throw_error(q, tmp, q->st.cur_ctx, "resource_error", too_many ? "max_vars" : "memory");
-	}
-
-	term_to_body(p);
-
-	if (p->error)
-		return throw_expansion_error(q, p, tmp);
-
-	cell *h = get_head(p->cl->cells);
-
-	prolog_lock_mod(q->pl, q->st.m);
-	rule *r = assertz_to_db(q->st.m, p->cl->num_vars, p->cl->cells, false);
-	prolog_unlock_mod(q->pl, q->st.m);
-
-	p->cl->cidx = 0;
-
-	if (!r) {
-		// h points into p->cl, so copy it out BEFORE parser_destroy()
-		// frees that. Only the static-procedure error path reads h,
-		// which is why this stayed latent.
-
-		h = copy_term_to_heap(q, h, q->st.cur_ctx, false);
-		parser_destroy(p);
-		CHECKED(h);
-		return throw_error(q, h, q->st.cur_ctx, "permission_error", "modify,static_procedure");
-	}
-
-	parser_destroy(p);
-	return true;
+	return assert_clause(q, tmp, false, NULL);
 }
 
 static bool bif_iso_assertz_1(query *q)
@@ -924,60 +888,17 @@ static bool do_asserta_2(query *q)
 	cell *tmp = copy_term_to_tmp(q, p1, p1_ctx, false);
 	CHECKED(tmp);
 
-	pl_idx num_cells = tmp->num_cells;
-	parser *p = parser_create_sized(q->st.m, num_cells);
-	CHECKED(p);
+	rule *r = NULL;
+	bool ok = assert_clause(q, tmp, true, &r);
 
-	p->cl->cidx = dup_cells(p->cl->cells, tmp, num_cells);
-
-	// The clause outlives the mapping any slice in it points into.
-	// Unsliced here, not in the tmp heap: this copy owns the reference the
-	// new string carries, and a slice had none for dup_cells() to share.
-
-	if (!unslice_cells(p->cl->cells, num_cells)) {
-		parser_destroy(p);
-		return throw_error(q, tmp, q->st.cur_ctx, "resource_error", "memory");
-	}
-
-	assign_vars(p, 0, true);
-
-	if (p->error) {
-		const bool too_many = p->vartab.num_vars >= MAX_VARS;
-		parser_destroy(p);
-		return throw_error(q, tmp, q->st.cur_ctx, "resource_error", too_many ? "max_vars" : "memory");
-	}
-
-	term_to_body(p);
-
-	if (p->error)
-		return throw_expansion_error(q, p, tmp);
-
-	cell *h = get_head(p->cl->cells);
-
-	prolog_lock_mod(q->pl, q->st.m);
-	rule *r = asserta_to_db(q->st.m, p->cl->num_vars, p->cl->cells, false);
-	prolog_unlock_mod(q->pl, q->st.m);
-
-	p->cl->cidx = 0;
-
-	if (!r) {
-		// h points into p->cl, so copy it out BEFORE parser_destroy()
-		// frees that. Only the static-procedure error path reads h,
-		// which is why this stayed latent.
-
-		h = copy_term_to_heap(q, h, q->st.cur_ctx, false);
-		parser_destroy(p);
-		CHECKED(h);
-		return throw_error(q, h, q->st.cur_ctx, "permission_error", "modify,static_procedure");
-	}
-
-	parser_destroy(p);
+	if (!r)
+		return ok;
 
 	char tmpbuf[128];
 	clause_ref_to_buf(r->dbgen_created, tmpbuf, sizeof(tmpbuf));
 	cell ref;
 	make_cstring(&ref, tmpbuf);
-	bool ok = unify(q, p2, p2_ctx, &ref, q->st.cur_ctx);
+	ok = unify(q, p2, p2_ctx, &ref, q->st.cur_ctx);
 	unshare_cell(&ref);
 	return ok;
 }
@@ -1035,60 +956,17 @@ static bool do_assertz_2(query *q)
 	cell *tmp = copy_term_to_tmp(q, p1, p1_ctx, false);
 	CHECKED(tmp);
 
-	pl_idx num_cells = tmp->num_cells;
-	parser *p = parser_create_sized(q->st.m, num_cells);
-	CHECKED(p);
+	rule *r = NULL;
+	bool ok = assert_clause(q, tmp, false, &r);
 
-	p->cl->cidx = dup_cells(p->cl->cells, tmp, num_cells);
-
-	// The clause outlives the mapping any slice in it points into.
-	// Unsliced here, not in the tmp heap: this copy owns the reference the
-	// new string carries, and a slice had none for dup_cells() to share.
-
-	if (!unslice_cells(p->cl->cells, num_cells)) {
-		parser_destroy(p);
-		return throw_error(q, tmp, q->st.cur_ctx, "resource_error", "memory");
-	}
-
-	assign_vars(p, 0, true);
-
-	if (p->error) {
-		const bool too_many = p->vartab.num_vars >= MAX_VARS;
-		parser_destroy(p);
-		return throw_error(q, tmp, q->st.cur_ctx, "resource_error", too_many ? "max_vars" : "memory");
-	}
-
-	term_to_body(p);
-
-	if (p->error)
-		return throw_expansion_error(q, p, tmp);
-
-	cell *h = get_head(p->cl->cells);
-
-	prolog_lock_mod(q->pl, q->st.m);
-	rule *r = assertz_to_db(q->st.m, p->cl->num_vars, p->cl->cells, false);
-	prolog_unlock_mod(q->pl, q->st.m);
-
-	p->cl->cidx = 0;
-
-	if (!r) {
-		// h points into p->cl, so copy it out BEFORE parser_destroy()
-		// frees that. Only the static-procedure error path reads h,
-		// which is why this stayed latent.
-
-		h = copy_term_to_heap(q, h, q->st.cur_ctx, false);
-		parser_destroy(p);
-		CHECKED(h);
-		return throw_error(q, h, q->st.cur_ctx, "permission_error", "modify,static_procedure");
-	}
-
-	parser_destroy(p);
+	if (!r)
+		return ok;
 
 	char tmpbuf[128];
 	clause_ref_to_buf(r->dbgen_created, tmpbuf, sizeof(tmpbuf));
 	cell ref;
 	make_cstring(&ref, tmpbuf);
-	bool ok = unify(q, p2, p2_ctx, &ref, q->st.cur_ctx);
+	ok = unify(q, p2, p2_ctx, &ref, q->st.cur_ctx);
 	unshare_cell(&ref);
 	return ok;
 }
