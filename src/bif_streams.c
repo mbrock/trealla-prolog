@@ -432,11 +432,9 @@ int new_stream(prolog *pl)
 		str->is_socket = false;
 		str->is_alias = false;
 		str->is_engine = false;
-		str->is_memory = false;
 		str->is_string = false;
 		str->ssl = false;				// a recycled slot must not look like its old TLS socket
 		str->sslptr = NULL;
-		str->captures = NULL;
 		str->idx = i;
 		str->bom = false;
 		str->repo = false;
@@ -2949,7 +2947,7 @@ static bool bif_iso_put_char_1(query *q)
 	int ch = get_char_utf8(&src);
 	char tmpbuf[MAX_BYTES_PER_CODEPOINT+1];
 	put_char_utf8(tmpbuf, ch);
-	tpl_write(tmpbuf, strlen(tmpbuf), str);
+	stream_write(q, tmpbuf, strlen(tmpbuf), str);
 	return true;
 }
 
@@ -2977,7 +2975,7 @@ static bool bif_iso_put_char_2(query *q)
 	int ch = get_char_utf8(&src);
 	char tmpbuf[MAX_BYTES_PER_CODEPOINT+1];
 	put_char_utf8(tmpbuf, ch);
-	tpl_write(tmpbuf, strlen(tmpbuf), str);
+	stream_write(q, tmpbuf, strlen(tmpbuf), str);
 	return true;
 }
 
@@ -3005,7 +3003,7 @@ static bool bif_iso_put_code_1(query *q)
 	int ch = (int)get_smallint(p1);
 	char tmpbuf[MAX_BYTES_PER_CODEPOINT+1];
 	put_char_utf8(tmpbuf, ch);
-	tpl_write(tmpbuf, strlen(tmpbuf), str);
+	stream_write(q, tmpbuf, strlen(tmpbuf), str);
 	return true;
 }
 
@@ -3037,7 +3035,7 @@ static bool bif_iso_put_code_2(query *q)
 	int ch = (int)get_smallint(p1);
 	char tmpbuf[MAX_BYTES_PER_CODEPOINT+1];
 	put_char_utf8(tmpbuf, ch);
-	tpl_write(tmpbuf, strlen(tmpbuf), str);
+	stream_write(q, tmpbuf, strlen(tmpbuf), str);
 	return true;
 }
 
@@ -3065,7 +3063,7 @@ static bool bif_iso_put_byte_1(query *q)
 	int ch = (int)get_smallint(p1);
 	char tmpbuf[80];
 	snprintf(tmpbuf, sizeof(tmpbuf), "%c", ch);
-	tpl_write(tmpbuf, 1, str);
+	stream_write(q, tmpbuf, 1, str);
 	return true;
 }
 
@@ -3094,7 +3092,7 @@ static bool bif_iso_put_byte_2(query *q)
 	int ch = (int)get_smallint(p1);
 	char tmpbuf[80];
 	snprintf(tmpbuf, sizeof(tmpbuf), "%c", ch);
-	tpl_write(tmpbuf, 1, str);
+	stream_write(q, tmpbuf, 1, str);
 	return true;
 }
 
@@ -6753,7 +6751,7 @@ static bool write_all(query *q, stream *str, const char *src, size_t len)
 	}
 
 	while (len) {
-		size_t nbytes = tpl_write(src, len, str);
+		size_t nbytes = stream_write(q, src, len, str);
 		FILE *fp_wr = str->fp_out ? str->fp_out : str->fp;
 
 		if (!nbytes) {
@@ -6889,13 +6887,31 @@ static bool bif_sys_put_chars_2(query *q)
 	return true;
 }
 
-// Begin a capture on a stream. Starting one inside another does not
-// stop the outer one: the two share the buffer, and the inner capture
-// remembers how much of it was already there so it can take only what
-// its own goal writes. Toggling is_memory instead - which is what this
-// did - turned capturing off on the nested call and freed the outer
-// buffer with it, so with_output_to/2 inside with_output_to/2 lost
-// both and let the text through to the real output.
+// The query whose captures q's writes go to. A subquery run from C for
+// a moment, as portray/1 is, writes for its caller; a task or a thread
+// is a query of its own, and an engine has no parent.
+
+static query *capture_owner(query *q)
+{
+	while (q->parent && !q->is_task)
+		q = q->parent;
+
+	return q;
+}
+
+// Write to str, or into the innermost of this query's captures of it.
+
+size_t stream_write(query *q, const void *ptr, size_t nbytes, stream *str)
+{
+	for (capture *c = capture_owner(q)->captures; c; c = c->prev) {
+		if (c->str == str) {
+			SB_fwrite(c->sb, ptr, nbytes);
+			return nbytes;
+		}
+	}
+
+	return tpl_write(ptr, nbytes, str);
+}
 
 static bool begin_capture(query *q, stream *str)
 {
@@ -6904,98 +6920,91 @@ static bool begin_capture(query *q, stream *str)
 	if (!c)
 		return throw_error(q, q->st.instr, q->st.cur_ctx, "resource_error", "memory");
 
-	if (!str->captures) {
-		SB_init(str->sb);
-		str->is_memory = true;
-	}
-
-	c->at = SB_strlen(str->sb);
-	c->prev = str->captures;
-	str->captures = c;
+	query *owner = capture_owner(q);
+	c->str = str;
+	SB_init(c->sb);
+	c->prev = owner->captures;
+	owner->captures = c;
 	return true;
 }
 
-// Where the innermost capture's text starts in the buffer.
+// Unlink the innermost capture, NULL when unpaired. The stream it was
+// begun on need not be current now: the goal may have changed that.
 
-static size_t capture_start(stream *str)
+static capture *pop_capture(query *q)
 {
-	return str->captures ? str->captures->at : 0;
+	query *owner = capture_owner(q);
+	capture *c = owner->captures;
+
+	if (c)
+		owner->captures = c->prev;
+
+	return c;
 }
 
-// End it, once its text has been taken: an outer capture carries on
-// with the buffer truncated to where this one began, and the last one
-// out gives the stream back to its file.
-
-static void end_capture(stream *str)
+static void free_capture(capture *c)
 {
-	capture *c = str->captures;
-
-	if (!c) {							// unpaired, as a toggle-off used to be
-		str->is_memory = false;
-		SB_free(str->sb);
-		return;
-	}
-
-	size_t at = c->at;
-	str->captures = c->prev;
+	SB_free(c->sb);
 	TPL_free(c);
+}
 
-	if (str->captures) {
-		SB_setlen(str->sb, at);			// the capture around this must not see it
-	} else {
-		str->is_memory = false;
-		SB_free(str->sb);
+// Those a query ends with, its goal never having reached the cleanup.
+
+void free_captures(query *q)
+{
+	while (q->captures) {
+		capture *c = q->captures;
+		q->captures = c->prev;
+		free_capture(c);
 	}
 }
 
-static bool bif_sys_capture_output_0(query *q)
-{
-	int n = q->pl->current_output;
-	stream *str = &q->pl->streams[n];
-	return begin_capture(q, str);
-}
+// End the innermost capture and unify what it caught. As characters,
+// nothing is the empty list, not the empty atom: make_stringn() maps a
+// zero length to '', which is what the atom wants but not a list.
 
-// A capture that caught nothing is the empty character list, not the
-// empty atom: make_stringn() maps a zero length to '', which is what
-// the atom and string builtins want but not a list of characters.
-
-static bool bif_sys_capture_output_to_chars_1(query *q)
+static bool end_capture(query *q, cell *p1, pl_ctx p1_ctx, bool as_chars)
 {
-	GET_FIRST_ARG(p1,var);
-	int n = q->pl->current_output;
-	stream *str = &q->pl->streams[n];
-	size_t at = capture_start(str);
-	const char *buf = SB_cstr(str->sb);		// a conditional expression, so bind it first
-	const char *src = buf + at;
-	size_t len = SB_strlen(str->sb) - at;
+	capture *c = pop_capture(q);
+	const char *src = "";
+	size_t len = 0;
 	cell tmp;
 
-	if (len)
+	if (c) {
+		src = SB_cstr(c->sb);
+		len = SB_strlen(c->sb);
+	}
+
+	if (!as_chars)
+		make_cstringn(&tmp, src, len);
+	else if (len)
 		make_stringn(&tmp, src, len);
 	else
 		make_atom(&tmp, g_nil_s);
 
-	end_capture(str);
+	if (c)
+		free_capture(c);
+
 	bool ok = unify(q, p1, p1_ctx, &tmp, q->st.cur_ctx);
 	unshare_cell(&tmp);
 	return ok;
+}
+
+static bool bif_sys_capture_output_0(query *q)
+{
+	return begin_capture(q, &q->pl->streams[q->pl->current_output]);
+}
+
+static bool bif_sys_capture_output_to_chars_1(query *q)
+{
+	GET_FIRST_ARG(p1,var);
+	return end_capture(q, p1, p1_ctx, true);
 }
 
 static bool bif_sys_capture_output_to_atom_1(query *q)
 {
 	GET_FIRST_ARG(p1,var);
-	int n = q->pl->current_output;
-	stream *str = &q->pl->streams[n];
-	size_t at = capture_start(str);
-	const char *buf = SB_cstr(str->sb);		// a conditional expression, so bind it first
-	const char *src = buf + at;
-	size_t len = SB_strlen(str->sb) - at;
-	cell tmp;
-	make_cstringn(&tmp, src, len);
-	end_capture(str);
-	bool ok = unify(q, p1, p1_ctx, &tmp, q->st.cur_ctx);
-	unshare_cell(&tmp);
-	return ok;
+	return end_capture(q, p1, p1_ctx, false);
 }
 
 // Run portray/1 on a term with current output captured, for format/2's ~p.
@@ -7024,64 +7033,35 @@ char *portray_term_to_strbuf(query *q, cell *c, pl_ctx c_ctx)
 		query_destroy(q2);
 	}
 
-	size_t at = capture_start(str);
-	size_t len = SB_strlen(str->sb) - at;
+	capture *cap = pop_capture(q);
+	size_t len = SB_strlen(cap->sb);
 	char *dst = q2 ? TPL_malloc(len+1) : NULL;
 
 	if (dst) {
-		const char *buf = SB_cstr(str->sb);		// a conditional expression, so bind it first
-		memcpy(dst, buf + at, len);
+		const char *buf = SB_cstr(cap->sb);		// a conditional expression, so bind it first
+		memcpy(dst, buf, len);
 		dst[len] = '\0';
 	}
 
-	end_capture(str);
+	free_capture(cap);
 	return dst;
 }
 
 static bool bif_sys_capture_error_0(query *q)
 {
-	int n = q->pl->current_error;
-	stream *str = &q->pl->streams[n];
-	return begin_capture(q, str);
+	return begin_capture(q, &q->pl->streams[q->pl->current_error]);
 }
 
 static bool bif_sys_capture_error_to_chars_1(query *q)
 {
 	GET_FIRST_ARG(p1,var);
-	int n = q->pl->current_error;
-	stream *str = &q->pl->streams[n];
-	size_t at = capture_start(str);
-	const char *buf = SB_cstr(str->sb);		// a conditional expression, so bind it first
-	const char *src = buf + at;
-	size_t len = SB_strlen(str->sb) - at;
-	cell tmp;
-
-	if (len)
-		make_stringn(&tmp, src, len);
-	else
-		make_atom(&tmp, g_nil_s);
-
-	end_capture(str);
-	bool ok = unify(q, p1, p1_ctx, &tmp, q->st.cur_ctx);
-	unshare_cell(&tmp);
-	return ok;
+	return end_capture(q, p1, p1_ctx, true);
 }
 
 static bool bif_sys_capture_error_to_atom_1(query *q)
 {
 	GET_FIRST_ARG(p1,var);
-	int n = q->pl->current_error;
-	stream *str = &q->pl->streams[n];
-	size_t at = capture_start(str);
-	const char *buf = SB_cstr(str->sb);		// a conditional expression, so bind it first
-	const char *src = buf + at;
-	size_t len = SB_strlen(str->sb) - at;
-	cell tmp;
-	make_cstringn(&tmp, src, len);
-	end_capture(str);
-	bool ok = unify(q, p1, p1_ctx, &tmp, q->st.cur_ctx);
-	unshare_cell(&tmp);
-	return ok;
+	return end_capture(q, p1, p1_ctx, false);
 }
 
 typedef struct {

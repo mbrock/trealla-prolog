@@ -154,7 +154,7 @@ static bool yield_on_stream(query *q, stream *str, bool is_write, int cap_ms)
 #if USE_POLL
 	bool would_block = (errno == EAGAIN) || (errno == EWOULDBLOCK);
 
-	if (would_block && q->is_task && str->is_socket && !str->ssl && !str->is_memory) {
+	if (would_block && q->is_task && str->is_socket && !str->ssl) {
 		FILE *fp = is_write ? str->fp_out : str->fp_in;
 		int fd = fp ? fileno(fp) : -1;
 

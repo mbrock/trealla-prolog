@@ -109,11 +109,6 @@ const char *tpl_servername(stream *str) { (void)str; return NULL; }
 
 size_t tpl_write(const void *ptr, size_t nbytes, stream *str)
 {
-	if (str->is_memory) {
-		SB_fwrite(str->sb, ptr, nbytes);
-		return nbytes;
-	}
-
 #if TPL_FREESTANDING
 	FILE *fp = str->fp_out ? str->fp_out : str->fp;
 
@@ -208,7 +203,7 @@ int tpl_close(stream *str)
 {
 	int ok = 1;
 
-	if (!str->is_memory && !str->is_popen && !str->is_string) {
+	if (!str->is_popen && !str->is_string) {
 		if ((str->fp_in == stdin) || (str->fp_in == stdout) || (str->fp_in == stderr))
 			return ok;
 
@@ -218,16 +213,9 @@ int tpl_close(stream *str)
 			fclose(str->fp_out);
 	}
 
-	if (str->is_memory || str->is_string)
+	if (str->is_string) {
 		SB_free(str->sb);
-
-	if (str->is_string)
 		ok = 0;
-
-	while (str->captures) {
-		capture *c = str->captures;
-		str->captures = c->prev;
-		TPL_free(c);
 	}
 
 	return ok;

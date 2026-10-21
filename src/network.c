@@ -580,17 +580,12 @@ size_t tpl_write(const void *ptr, size_t nbytes, stream *str)
 	}
 #endif
 
-	if (str->is_memory) {
-		SB_fwrite(str->sb, ptr, nbytes);
-		return nbytes;
-	} else {
-		size_t len = fwrite(ptr, 1, nbytes, str->fp_out?str->fp_out:str->fp);
+	size_t len = fwrite(ptr, 1, nbytes, str->fp_out?str->fp_out:str->fp);
 
-		if (str->is_pipe)
-			fflush(str->fp_out);
+	if (str->is_pipe)
+		fflush(str->fp_out);
 
-		return len;
-	}
+	return len;
 }
 
 #if USE_OPENSSL
@@ -1175,7 +1170,7 @@ int tpl_close(stream *str)
 
 	int ok = 1;
 
-	if (!str->is_memory && !str->is_popen && !str->is_string) {
+	if (!str->is_popen && !str->is_string) {
 		if (str->is_socket) {
 			// A non-blocking socket's fflush() can return early with
 			// whatever write_all() (bif_streams.c) left buffered in
@@ -1200,19 +1195,9 @@ int tpl_close(stream *str)
 			fclose(str->fp_out);
 	}
 
-	if (str->is_memory || str->is_string)
+	if (str->is_string) {
 		SB_free(str->sb);
-
-	if (str->is_string)
 		ok = 0;
-
-	// A stream closed part-way through a with_output_to/2 still owns
-	// the marks of the captures that were running on it.
-
-	while (str->captures) {
-		capture *c = str->captures;
-		str->captures = c->prev;
-		TPL_free(c);
 	}
 
 	return ok;

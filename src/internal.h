@@ -740,16 +740,17 @@ struct slot_page_ {
 
 enum { eof_action_eof_code, eof_action_error, eof_action_reset };
 
-// with_output_to/2 captures what a goal writes by making the stream
-// hold its output in memory. Captures nest, so each one records where
-// in that buffer it began: the text it captured is what was appended
-// past its mark, and taking it truncates the buffer back so that the
-// capture around it never sees it. The marks form a stack because
+// with_output_to/2 captures what a goal writes to a stream in a buffer
+// of its own, kept on the query that began it rather than on the stream:
+// another thread or task writing the same stream meanwhile is not its
+// goal's output. Captures nest, innermost first, and an inner one's text
+// never reaches the one around it. They form a stack because
 // setup_call_cleanup/3 makes the pairing last-in-first-out.
 
 struct capture_ {
 	capture *prev;
-	size_t at;
+	stream *str;
+	stringbuf sb_buf;
 };
 
 struct stream_ {
@@ -766,7 +767,6 @@ struct stream_ {
 	skiplist *alias;
 	void *sslptr;
 	parser *p;
-	capture *captures;					// innermost first, NULL when not capturing
 
 	// srcbuf is read by exactly one thing - the SSL path in network.c - so
 	// a build with no network carries a kilobyte per stream for code that
@@ -809,7 +809,6 @@ struct stream_ {
 	bool is_pipe:1;
 	bool is_popen:1;
 	bool is_socket:1;
-	bool is_memory:1;
 	bool is_string:1;					// reads from sb, has no FILE
 	bool str_eof:1;
 	bool is_engine:1;
@@ -1064,6 +1063,7 @@ struct query_ {
 	mpq_t tmp_irat;
 	run_state st;
 	stringbuf sb_buf;
+	capture *captures;					// with_output_to/2's, see capture_owner()
 
 	// Name numbers already spoken for by variables the user wrote as _A,
 	// _B1 and so on, so a generated name never collides with a source

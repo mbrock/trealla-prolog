@@ -2531,7 +2531,7 @@ static bool sb_flush(query *q, stream *str, FILE *fp, bool ok)
 	ssize_t len = SB_strlen(q->sb);
 
 	while (len) {
-		size_t nbytes = str ? tpl_write(src, len, str) : fwrite(src, 1, len, fp);
+		size_t nbytes = str ? stream_write(q, src, len, str) : fwrite(src, 1, len, fp);
 
 		if (!nbytes && str && !q->is_task && ((errno == EAGAIN) || (errno == EWOULDBLOCK)) && ferror(fp)) {
 			// A non-task socket is non-blocking now (see bif_net.c), so a
