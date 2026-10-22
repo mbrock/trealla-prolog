@@ -1,0 +1,4 @@
+atoms(50,a_long_enough_first_field_50)
+strings(50,another_long_enough_field_50)
+numbers(1275)
+domain_error(row_arity,2)

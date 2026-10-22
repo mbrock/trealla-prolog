@@ -217,9 +217,13 @@ bool do_parse_csv_line(query *q, parser *p, csv *params, const char *src, cell *
 			return throw_error(q, l, q->st.cur_ctx, "permission_error", "modify,static_procedure");
 	}
 
+	pl_idx num_cells = l->num_cells;
+
 	if (!assertz_to_db(q->st.m, 0, l, false))
 		return throw_error(q, l, q->st.cur_ctx, "permission_error", "modify_static_procedure");
 
+	// assertz_to_db() moved the row into the clause, counts and all: the copy left on the heap owns nothing now
+	memset(l, 0, sizeof(cell) * num_cells);
 	return true;
 }
 
@@ -345,7 +349,13 @@ bool bif_parse_csv_file_2(query *q)
 	p->fp = fopen(C_STR(q, p1), "r");
 	if (!p->fp) { parser_destroy(p); return throw_error(q, p1, p1_ctx, "existence_error", "source_sink"); }
 	unsigned line_num = 0;
-	pl_idx save_hp = q->st.hp;
+
+	// Each line's fields, its row on the heap and the trail entries binding them are done with once the row is asserted
+	// (copied): back to here after every line, releasing them, or a long file holds every line's until the query ends.
+
+	pl_idx save_hp = q->st.hp, save_hp_num = q->st.hp_num, save_tp = q->st.tp;
+	slot *save_sp = q->st.sp;
+	slot_page *save_sp_page = q->st.sp_page;
 	frame *f = GET_CURR_FRAME();
 	frame save_f = *f;
 	ssize_t len;
@@ -364,22 +374,41 @@ bool bif_parse_csv_file_2(query *q)
 		if ((comments && (line[0] == comment)) || !line[0] || (line[0] == '\r') || (line[0] == '\n'))
 			continue;
 
-		if (!do_parse_csv_line(q, p, &params, line, NULL, 0)) {
-			//fprintf(stderr, "Error: line %u\n", line_num);
+		// A throw that found its catch returns true: what throw_error() said is the answer, and the file is done with
+
+		bool ok = do_parse_csv_line(q, p, &params, line, NULL, 0);
+
+		if (!ok || q->did_throw) {
 			TPL_free(p->save_line);
 			p->save_line = NULL;
 			fclose(p->fp);
 			p->fp = NULL;
 			parser_destroy(p);
-			return false;
+			return ok;
+		}
+
+		for (unsigned i = save_f.actual_slots; i < f->actual_slots; i++) {
+			slot *e = get_slot(q, f, i);
+			unshare_cell(&e->c);
+			memset(e, 0, sizeof(slot));
 		}
 
 		*f = save_f;
+		q->st.sp = save_sp;
+		q->st.sp_page = save_sp_page;
+
+		while (q->st.tp > save_tp)
+			pop_trail(q);
+
 		q->st.hp = save_hp;
+		q->st.hp_num = save_hp_num;
+		trim_heap(q);
 	}
 
 	TPL_free(p->save_line);
+	p->save_line = NULL;			// parser_destroy() frees it too
 	fclose(p->fp);
+	p->fp = NULL;
 	parser_destroy(p);
 
 #if 0
