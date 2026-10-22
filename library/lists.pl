@@ -45,9 +45,12 @@ append([X|L], R, [X|S]) :- append(L, R, S).
 
 :- help(append(?term,?term,?term), [iso(false), desc('The concatenation of two lists to make a third.')]).
 
-member(X, [X | _]).
-member(X, [_ | T]) :-
-    member(X, T).
+member(El, [H|T]) :-
+	member_(T, El, H).
+
+member_(_, El, El).
+member_([H|T], El, _) :-
+	member_(T, El, H).
 
 :- help(member(?term,?term), [iso(false), desc('Is element a member of the list.')]).
 
