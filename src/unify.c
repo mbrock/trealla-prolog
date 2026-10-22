@@ -363,7 +363,7 @@ static inline bool needs_trail(query *q, pl_ctx c_ctx)
 
 static bool set_var(query *q, const cell *c, pl_ctx c_ctx, cell *v, pl_ctx v_ctx)
 {
-	const frame *f = GET_FRAME(c_ctx);
+	frame *f = GET_FRAME(c_ctx);
 	slot *e = get_slot(q, f, c->var_num);
 	cell *c_attrs = e->c.val_attrs;
 
@@ -422,6 +422,7 @@ static bool set_var(query *q, const cell *c, pl_ctx c_ctx, cell *v, pl_ctx v_ctx
 	} else {
 		e->c = *v;
 		share_cell(v);
+		if (is_managed(v)) note_managed_slot(q, f, c_ctx);
 	}
 
 	return true;
@@ -429,11 +430,12 @@ static bool set_var(query *q, const cell *c, pl_ctx c_ctx, cell *v, pl_ctx v_ctx
 
 void reset_var(query *q, const cell *c, pl_ctx c_ctx, cell *v, pl_ctx v_ctx)
 {
-	const frame *f = GET_FRAME(c_ctx);
+	frame *f = GET_FRAME(c_ctx);
 	slot *e = get_slot(q, f, c->var_num);
 	share_cell(v);
 	unshare_cell(&e->c);
 	e->c = *v;
+	if (is_managed(v)) note_managed_slot(q, f, c_ctx);
 }
 
 static bool unify_internal(query *q, cell *p1, pl_ctx p1_ctx, cell *p2, pl_ctx p2_ctx, unsigned depth);

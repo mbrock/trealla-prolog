@@ -462,9 +462,10 @@ static bool bif_sys_redo_trail_1(query * q)
 		if (is_frame_layout(tr))
 			continue;
 
-		const frame *f = GET_FRAME(tr->val_ctx);
+		frame *f = GET_FRAME(tr->val_ctx);
 		slot *e = get_slot(q, f, tr->var_num);
 		e->c = save->e[j].c;
+		if (is_managed(&e->c)) note_managed_slot(q, f, tr->val_ctx);
 
 		// Close the bracket '$undo_trail'/2 opened: the binding is back,
 		// so the occurs marks it set have done their job (issue #1127).

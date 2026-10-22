@@ -1266,7 +1266,7 @@ bool bif_sys_jump_1(query *q)
 // list between retries: it is written without trailing, so backtracking to this choicepoint leaves it be. A list
 // cell is kept by pointer, being on the heap or in a clause, and a string's tail, made in a temporary, by value.
 
-static void member_save(query *q, slot *e, cell *t, pl_ctx t_ctx)
+static void member_save(query *q, frame *f, pl_ctx f_ctx, slot *e, cell *t, pl_ctx t_ctx)
 {
 	unshare_cell(&e->c);
 
@@ -1275,6 +1275,7 @@ static void member_save(query *q, slot *e, cell *t, pl_ctx t_ctx)
 	} else if (is_string(t) || !is_compound(t)) {
 		e->c = *t;
 		share_cell(t);
+		if (is_managed(t)) note_managed_slot(q, f, f_ctx);
 	} else
 		make_indirect(&e->c, t, t_ctx);
 }
@@ -1301,7 +1302,9 @@ bool bif_sys_member_3(query *q)
 	GET_FIRST_ARG(p1,any);
 	GET_NEXT_ARG(p2,any);
 	GET_NEXT_RAW_ARG(p3,var);
-	slot *e = get_slot(q, GET_FRAME(is_ref(p3) ? p3->val_ctx : p3_ctx), p3->var_num);
+	const pl_ctx fv_ctx = is_ref(p3) ? p3->val_ctx : p3_ctx;
+	frame *fv = GET_FRAME(fv_ctx);
+	slot *e = get_slot(q, fv, p3->var_num);
 	cell *l = p2;
 	pl_ctx l_ctx = p2_ctx;
 
@@ -1332,7 +1335,7 @@ bool bif_sys_member_3(query *q)
 	// No choicepoint when nothing can follow, so member(X, [a]) stays deterministic as first-argument indexing has it
 
 	if (is_list(t) || is_var(t)) {
-		member_save(q, e, t, t_ctx);
+		member_save(q, fv, fv_ctx, e, t, t_ctx);
 		CHECKED(push_choice(q));
 	} else {
 		// The last: nothing retries, and backtracking over the frame never unshares its slots, so the saved tail goes now

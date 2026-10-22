@@ -645,7 +645,11 @@ struct frame_ {
 	pl_ctx prev;
 	bool no_recov:1;
 	bool heap_pinned:1;
+	bool holds_managed:1;				// a slot was given a counted value: release_frames() reads no other frame's
 };
+
+// A slot of frame f, at ctx, was given a counted value: release_frames() has to look at it if backtracking discards it
+#define note_managed_slot(q, f, ctx) do { (f)->holds_managed = true; if ((ctx) >= (q)->managed_hi) (q)->managed_hi = (ctx) + 1; } while (0)
 
 #define FRAME_PAGE_SHIFT 7
 #define FRAME_PAGE_SIZE (1U << FRAME_PAGE_SHIFT)
@@ -1097,6 +1101,7 @@ struct query_ {
 	bool goal_trap;							// either of the two above armed: one test per goal while neither is
 	uint64_t total_tcos, total_recovs, total_matched, total_no_recovs;
 	pl_idx hw_frames, hw_choices, hw_trails, hw_slots, hw_heap;	// highwater marks, for statistics
+	pl_ctx managed_hi;					// no frame from here up has holds_managed set
 	uint64_t step, qid, tmo_msecs, chgen, cycle_error;
 	uint64_t push_clock;				// ticks with every choicepoint pushed
 	uint64_t task_id;

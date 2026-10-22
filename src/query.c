@@ -1532,16 +1532,14 @@ static void rewind_slots(query *q, slot *run)
 	q->st.sp = run;
 }
 
-// Back to frame f's heap mark: one in an older page frees the newer, where allocation would otherwise carry on unmarked.
+// Back to frame f's heap mark, releasing what was built since as reuse_frame() does: in the same page too, where the
+// next allocation would otherwise write over counted cells, and in an older one, freeing the newer.
 
 static void wind_heap(query *q, const frame *f)
 {
-	const bool other_page = q->st.hp_num != f->hp_num;
 	q->st.hp = f->hp;
 	q->st.hp_num = f->hp_num;
-
-	if (other_page)
-		trim_heap(q);
+	trim_heap(q);
 }
 
 static void trim_frame(query *q, const frame *f)
@@ -1559,6 +1557,35 @@ static void trim_frame(query *q, const frame *f)
 		rewind_slots(q, f->slots);
 
 	q->st.fp = q->st.cur_ctx;
+}
+
+// Backtracking to a choice discards the frames made since. trim_trail() dropped their own variables' entries once each
+// head matched, so the counted values their slots still hold go here, after undo_me() has released the trailed ones.
+
+static void release_frames(query *q, pl_ctx from)
+{
+	if (q->managed_hi <= from)
+		return;
+
+	for (pl_ctx i = from; i < q->st.fp; i++) {
+		frame *f = GET_FRAME(i);
+
+		if (!f->holds_managed)
+			continue;
+
+		f->holds_managed = false;
+
+		for (unsigned j = 0; j < f->actual_slots; j++) {
+			slot *e = get_slot(q, f, j);
+
+			if (is_managed(&e->c)) {
+				unshare_cell_(&e->c);
+				memset(e, 0, sizeof(slot));
+			}
+		}
+	}
+
+	q->managed_hi = from;
 }
 
 bool add_trail(query *q, pl_ctx c_ctx, unsigned c_var_nbr, cell *attrs)
@@ -1634,7 +1661,7 @@ static void try_me(query *q, unsigned num_vars)
 {
 	frame *f = GET_NEW_FRAME();
 	f->initial_slots = f->actual_slots = num_vars;
-	f->heap_pinned = false;
+	f->heap_pinned = f->holds_managed = false;
 	q->total_matches++;
 
 	for (unsigned i = 0; i < num_vars; i++) {
@@ -1744,6 +1771,7 @@ static bool reuse_frame(query *q, unsigned num_vars)
 	f_cur->initial_slots = f_cur->actual_slots = num_vars;
 	f_cur->no_recov = false;
 	f_cur->heap_pinned = f_new->heap_pinned;
+	f_cur->holds_managed = f_new->holds_managed;
 
 	if ((f_cur->slots < q->st.sp_page->slots) || (f_cur->slots > f_new->slots))
 		restart_run(q, f_cur);
@@ -2050,6 +2078,7 @@ int retry_choice(query *q)
 		undo_me(q);
 		pl_idx cp = q->st.cp - 1;
 		choice *ch = GET_CURR_CHOICE();
+		release_frames(q, ch->st.fp);
 		pop_choice(q);
 		if (ch->undo)
 			undo_list_drain(ch->undo);
