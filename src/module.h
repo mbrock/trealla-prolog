@@ -16,6 +16,7 @@ bool module_dump_term(module* m, cell *p1);
 bool save_file(module *m, const char *filename);
 module *load_file(module *m, const char *filename, bool including, bool init);
 module *load_fp(module *m, FILE *fp, const char *filename, bool including, bool init);
+module *reload_file(module *m, const char *filename);
 module *load_text(module *m, const char *src, const char *filename);
 bool unload_file(module *m, const char *filename);
 void forget_file(module *m, const char *filename);

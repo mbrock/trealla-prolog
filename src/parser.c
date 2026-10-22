@@ -1793,9 +1793,9 @@ static bool directive_term(parser *p, cell *c)
 		const char *file = p->m->filename;
 		module *tmp_m = find_module(p->pl, name);
 
-		// Its own file read again, by make/0 or consult/1, and not from within itself
+		// Its own file read again, by make/0 or consult/1 (not an import, #1176), and not from within itself
 
-		bool reload = tmp_m && !tmp_m->reading_file && is_known(tmp_m, file);
+		bool reload = p->is_reconsult && tmp_m && !tmp_m->reading_file && is_known(tmp_m, file);
 
 		if (reload) {
 			unload_file(tmp_m, file);			// what the old copy put there, not what was asserted since

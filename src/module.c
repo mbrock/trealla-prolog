@@ -290,7 +290,7 @@ void make(module *m)
 					unload_file(m, ptr->filename);
 
 				unload_file(m, parent_filename);
-				load_file(m, parent_filename, false, true);
+				reload_file(m, parent_filename);
 				TPL_free(parent_filename);
 			}
 		}
@@ -3561,10 +3561,11 @@ bool unload_file(module *m, const char *filename)
 #endif
 }
 
-module *load_fp(module *m, FILE *fp, const char *filename, bool including, bool init)
+static module *load_source_fp(module *m, FILE *fp, const char *filename, bool including, bool init, bool reload)
 {
 	parser *p = parser_create(m);
 	if (!p) return NULL;
+	p->is_reconsult = reload;
 	const char *save_filename = m->filename;
 	const char *save_base = g_load_base;
 	if (!including) m->filename = set_known(m, filename);
@@ -3632,13 +3633,19 @@ module *load_fp(module *m, FILE *fp, const char *filename, bool including, bool 
 	return save_m;
 }
 
-module *load_file(module *m, const char *filename, bool including, bool init)
+module *load_fp(module *m, FILE *fp, const char *filename, bool including, bool init)
+{
+	return load_source_fp(m, fp, filename, including, init, false);
+}
+
+static module *load_source(module *m, const char *filename, bool including, bool init, bool reload)
 {
 #if !TPL_FEATURE_FILESYSTEM
 	(void)m;
 	(void)filename;
 	(void)including;
 	(void)init;
+	(void)reload;
 	return NULL;
 #else
 	const char *orig_filename = filename;
@@ -3686,7 +3693,7 @@ module *load_file(module *m, const char *filename, bool including, bool init)
 				parser_destroy(p);
 			}
 
-			module *save_m = load_fp(m, str->fp, filename, including, init);
+			module *save_m = load_source_fp(m, str->fp, filename, including, init, reload);
 			clearerr(str->fp);
 			return save_m;
 		}
@@ -3713,7 +3720,7 @@ module *load_file(module *m, const char *filename, bool including, bool init)
 		ENSURE(tmpbuf);
 		strcpy(tmpbuf, orig_filename);
 		strcat(tmpbuf, ".pl");
-		m = load_file(m, tmpbuf, including, init);
+		m = load_source(m, tmpbuf, including, init, reload);
 		TPL_free(tmpbuf);
 		TPL_free(realbuf);
 		return m;
@@ -3746,11 +3753,23 @@ module *load_file(module *m, const char *filename, bool including, bool init)
 		fseek(fp, 0, SEEK_SET);
 
 	clearerr(fp);
-	module *save_m = load_fp(m, fp, filename, including, init);
+	module *save_m = load_source_fp(m, fp, filename, including, init, reload);
 	fclose(fp);
 	TPL_free(realbuf);
 	return save_m;
 #endif
+}
+
+module *load_file(module *m, const char *filename, bool including, bool init)
+{
+	return load_source(m, filename, including, init, false);
+}
+
+// As consult/1 and make/0 do, re-reading a module's own file into it
+
+module *reload_file(module *m, const char *filename)
+{
+	return load_source(m, filename, false, true, true);
 }
 
 static void module_save_fp(module *m, FILE *fp, int canonical, int dq)

@@ -5030,7 +5030,7 @@ bool do_load_file(query *q, cell *p1, pl_ctx p1_ctx)
 		unload_file(q->st.m, filename);
 		TPL_free(src);
 
-		if (!load_file(q->st.m, filename, false, true)) {
+		if (!reload_file(q->st.m, filename)) {
 			TPL_free(filename);
 			return throw_error(q, p1, p1_ctx, "existence_error", "source_sink");
 		}
@@ -5058,7 +5058,7 @@ bool do_load_file(query *q, cell *p1, pl_ctx p1_ctx)
 	TPL_free(src);
 	unload_file(tmp_m, filename);
 
-	if (!load_file(tmp_m, filename, false, true)) {
+	if (!reload_file(tmp_m, filename)) {
 		module_destroy(tmp_m);
 		TPL_free(filename);
 		return throw_error(q, p1, p1_ctx, "existence_error", "source_sink");
