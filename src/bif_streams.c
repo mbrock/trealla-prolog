@@ -5075,6 +5075,7 @@ static bool do_unload_file(query *q, cell *p1, pl_ctx p1_ctx)
 		char *filename = relative_to(loading_base(q->st.m), src);
 		TPL_free(src);
 		unload_file(q->st.m, filename);
+		forget_file(q->st.m, filename);
 		TPL_free(filename);
 		return true;
 	}
@@ -5095,6 +5096,7 @@ static bool do_unload_file(query *q, cell *p1, pl_ctx p1_ctx)
 	char *filename = relative_to(loading_base(q->st.m), src);
 	TPL_free(src);
 	unload_file(q->st.m, filename);
+	forget_file(q->st.m, filename);
 	TPL_free(filename);
 	return true;
 }

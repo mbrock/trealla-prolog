@@ -3518,6 +3518,28 @@ bool source_exists(const char *filename)
 #endif
 }
 
+// Taken out by unload_files/1: make/0 is not to bring it back, as SWI's does not, until it is loaded again.
+
+void forget_file(module *m, const char *filename)
+{
+#if !TPL_FEATURE_FILESYSTEM
+	(void)m;
+	(void)filename;
+#else
+	char *realbuf = find_source(filename);
+
+	if (!realbuf)
+		return;
+
+	for (loaded_file *ptr = m->loaded_files; ptr; ptr = ptr->next) {
+		if (!strcmp(ptr->filename, realbuf))
+			ptr->mtime = 0;
+	}
+
+	TPL_free(realbuf);
+#endif
+}
+
 bool unload_file(module *m, const char *filename)
 {
 #if !TPL_FEATURE_FILESYSTEM
