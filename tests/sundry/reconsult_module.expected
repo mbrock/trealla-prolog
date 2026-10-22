@@ -1,0 +1,3 @@
+module([2])
+imported([2])
+self([1])

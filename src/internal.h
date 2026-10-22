@@ -1248,6 +1248,7 @@ struct parser_ {
 	bool was_partial:1;
 	bool did_getline:1;
 	bool already_loaded_error:1;
+	bool switched_module:1;				// a module/2 directive set p->m->reading_file
 	bool do_read_term:1;
 	bool internal:1;
 	bool one_shot:1;
@@ -1306,7 +1307,6 @@ struct module_ {
 	parser *p;
 	FILE *fp;
 	const char *filename, *name, *actual_filename;
-	const char *source_filename;		// the file being read, an included one too, while loading
 	skiplist *index, *ops, *defops, *keyval;
 	skiplist *props;					// which name/arity have $predicate_property clauses
 	loaded_file *loaded_files;
@@ -1332,8 +1332,8 @@ struct module_ {
 	bool error:1;
 	bool ignore_vars:1;
 	bool wild_goal_expansion:1;
-	bool make:1;
 	bool run_init:1;
+	bool reading_file;					// its module/2 file is being read: filename is that file, not its name
 };
 
 #define OP_NAMES_BITS 8192
@@ -1533,11 +1533,14 @@ uint64_t monotonic_time_in_usec(void);
 char *relative_to(const char *basefile, const char *relfile);
 bool source_exists(const char *filename);
 
+// The file this thread is reading, an included one too, while it loads one
+extern pl_thread_local const char *g_load_base;
+
 // What a relative file name in m resolves against: the file being read, else m's own
 
 inline static const char *loading_base(const module *m)
 {
-	return m->source_filename ? m->source_filename : m->filename;
+	return g_load_base ? g_load_base : m->filename;
 }
 size_t sprint_int(char *dst, size_t size, pl_int n, int base);
 int format_integer(char *dst, cell *c, int grouping, int sep, int decimals, int radix);

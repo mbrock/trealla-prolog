@@ -1774,12 +1774,17 @@ static bool directive_term(parser *p, cell *c)
 		} else
 			name = C_STR(p, p1);
 
+		// The file being loaded, not an included one, for the module's clauses to be from
+
+		const char *file = p->m->filename;
 		module *tmp_m = find_module(p->pl, name);
 
-		if (tmp_m && p->m->make) {
-			// make/0 reloads into the module the file defines, dropping what the old copy put there
-			unload_file(tmp_m, loading_base(p->m));
-			p->m = tmp_m;
+		// Its own file read again, by make/0 or consult/1, and not from within itself
+
+		bool reload = tmp_m && !tmp_m->reading_file && is_known(tmp_m, file);
+
+		if (reload) {
+			unload_file(tmp_m, file);			// what the old copy put there, not what was asserted since
 		} else if (tmp_m) {
 			p->already_loaded_error = true;
 			p->m = tmp_m;
@@ -1798,11 +1803,14 @@ static bool directive_term(parser *p, cell *c)
 
 			if (tmp_m != p->m)
 				module_add_use(p->m, tmp_m);
-
-			// Not its name, so relative loads in the module resolve against its file
-			tmp_m->filename = set_known(tmp_m, loading_base(p->m));
-			p->m = tmp_m;
 		}
+
+		// Its file while being read, so its clauses are from it, and its name again after
+
+		module_load_done(p);
+		tmp_m->filename = set_known(tmp_m, file);
+		tmp_m->reading_file = p->switched_module = true;
+		p->m = tmp_m;
 
 		if (get_arity(c) == 1)
 			return true;
@@ -1853,6 +1861,9 @@ static bool directive_term(parser *p, cell *c)
 
 			p2 = PROLOG_LIST_TAIL(p2);
 		}
+
+		if (reload && (save_m != tmp_m))
+			module_import_new_exports(save_m, tmp_m);
 
 		return true;
 	}

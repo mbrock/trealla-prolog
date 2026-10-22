@@ -22,7 +22,7 @@ struct loaded_file_ {
 	char *filename;
 	char *orig_filename;
 	const char *parent;
-	time_t when_loaded;
+	time_t mtime;						// the file's when last loaded, 0 if never loaded into this module
 	bool is_loaded:1;
 };
 
@@ -144,20 +144,30 @@ const char *set_known(module *m, const char *filename)
 	ptr->next = m->loaded_files;
 	ptr->orig_filename = TPL_strdup(filename);
 	ptr->filename = TPL_strdup(filename);
-	ptr->when_loaded = 0;
+	ptr->mtime = 0;
 	ptr->is_loaded = false;
 	ptr->parent = NULL;
 	m->loaded_files = ptr;
 	return ptr->filename;
 }
 
-static const char *set_loaded(module *m, const char *filename, const char *orig_filename)
+bool is_known(const module *m, const char *filename)
+{
+	for (const loaded_file *ptr = m->loaded_files; ptr; ptr = ptr->next) {
+		if (!strcmp(ptr->filename, filename))
+			return true;
+	}
+
+	return false;
+}
+
+static const char *set_loaded(module *m, const char *filename, const char *orig_filename, time_t mtime)
 {
 	loaded_file *ptr = m->loaded_files;
 
 	while (ptr) {
 		if (!strcmp(ptr->filename, filename)) {
-			ptr->when_loaded = time(0);		// a reload, or make/0 sees it as changed ever after
+			ptr->mtime = mtime;				// a reload, or make/0 sees it as changed ever after
 			ptr->is_loaded = true;
 			return ptr->filename;
 		}
@@ -170,7 +180,7 @@ static const char *set_loaded(module *m, const char *filename, const char *orig_
 	ptr->next = m->loaded_files;
 	ptr->orig_filename = TPL_strdup(orig_filename);
 	ptr->filename = TPL_strdup(filename);
-	ptr->when_loaded = time(0);
+	ptr->mtime = mtime;
 	ptr->is_loaded = true;
 	ptr->parent = NULL;
 	m->loaded_files = ptr;
@@ -262,17 +272,17 @@ static void clear_loaded(const module *m)
 
 void make(module *m)
 {
-	m->make = true;
 	loaded_file *ptr = m->loaded_files;
 
 	while (ptr) {
 		struct stat st = {0};
 		loaded_file *save = ptr->next;
 
-		// A file only known, as a module's own source is, was not loaded into m
+		// One only known, as a module's own source is, was never loaded into m. One whose load
+		// failed is retried, and any change counts: a file put back to an older copy changed too.
 
-		if (ptr->is_loaded && (stat(ptr->filename, &st) == 0)) {
-			if (st.st_mtime > ptr->when_loaded) {
+		if (ptr->mtime && (stat(ptr->filename, &st) == 0)) {
+			if (st.st_mtime != ptr->mtime) {
 				char *parent_filename = TPL_strdup(get_parent(m, ptr->filename));
 				printf("%% %s changed\n", ptr->filename);
 
@@ -287,8 +297,6 @@ void make(module *m)
 
 		ptr = save;
 	}
-
-	m->make = false;
 }
 
 predicate *find_predicate(module *m, cell *c)
@@ -1655,6 +1663,30 @@ bool do_use_module_1(module *cur_m, cell *c)
 	}
 
 	return true;
+}
+
+// After a module's file is read again, what it now exports and the importer neither imports nor defines
+
+void module_import_new_exports(module *into, module *from)
+{
+	for (predicate *pr = list_front(&from->predicates); pr; pr = list_next(pr)) {
+		if (pr->is_public && !find_predicate(into, &pr->key))
+			do_import_predicate(into, from, pr, &pr->key);
+	}
+}
+
+// A module a module/2 directive in this parse switched to goes back to its name once its file is read
+
+void module_load_done(parser *p)
+{
+	module *m = p->m;
+
+	if (!m || !p->switched_module)
+		return;
+
+	m->filename = set_known(m, m->name);
+	m->reading_file = false;
+	p->switched_module = false;
 }
 
 bool do_use_module_2(module *cur_m, cell *c)
@@ -3247,7 +3279,8 @@ module *load_text(module *m, const char *src, const char *filename)
 	parser *p = parser_create(m);
 	check_error(p);
 	const char *save_filename = p->m->filename;
-	p->m->filename = set_known(m, filename);
+	const char *save_base = g_load_base;
+	g_load_base = p->m->filename = set_known(m, filename);
 	p->is_consulting = true;
 	p->srcptr = (char*)src;
 	tokenize(p, false, false);
@@ -3275,7 +3308,9 @@ module *load_text(module *m, const char *src, const char *filename)
 	}
 
 	module *save_m = p->m;
+	module_load_done(p);
 	m->filename = save_filename;
+	g_load_base = save_base;
 	parser_destroy(p);
 	return save_m;
 }
@@ -3423,38 +3458,13 @@ static const char *g_src_suffixes[] = {
 	".pl", "", ".pro", ".prolog", ".p", ".P"
 };
 
-// Whether load_file() would find filename, trying the same suffixes
+pl_thread_local const char *g_load_base;
 
-bool source_exists(const char *filename)
+#if TPL_FEATURE_FILESYSTEM
+// The real path of the source file a consulted name means, ~ expanded and the suffixes tried in order, or NULL
+
+static char *find_source(const char *filename)
 {
-#if !TPL_FEATURE_FILESYSTEM
-	(void)filename;
-	return false;
-#else
-	size_t len = strlen(filename);
-	char *tmpbuf = TPL_malloc(len + 20);
-	ENSURE(tmpbuf);
-	bool found = false;
-
-	for (unsigned i = 0; !found && (i < (sizeof(g_src_suffixes) / sizeof(g_src_suffixes[0]))); i++) {
-		memcpy(tmpbuf, filename, len);
-		strcpy(tmpbuf + len, g_src_suffixes[i]);
-		struct stat st = {0};
-		found = !stat(tmpbuf, &st);
-	}
-
-	TPL_free(tmpbuf);
-	return found;
-#endif
-}
-
-bool unload_file(module *m, const char *filename)
-{
-#if !TPL_FEATURE_FILESYSTEM
-	(void)m;
-	(void)filename;
-	return false;
-#else
 	size_t len = strlen(filename);
 	char *tmpbuf = TPL_malloc(len + 20);
 	ENSURE(tmpbuf);
@@ -3472,10 +3482,15 @@ bool unload_file(module *m, const char *filename)
 	}
 
 	char *savebuf = TPL_strdup(tmpbuf);
+	ENSURE(savebuf);
 	char *realbuf = NULL;
 
-	// Same order as load_file, or unloading `f` would not find the
-	// `f.pl` that consulting `f` actually loaded.
+	// ".pl" is tried before the bare name. Quintus and SICStus both
+	// specified it that way and every system since has followed, so
+	// consulting `f` where both `f.pl` and an executable `f` exist must
+	// pick the source file - see issue #1114.
+	//
+	// The empty suffix in the middle is the bare name; the rest are ours.
 
 	for (unsigned i = 0; i < (sizeof(g_src_suffixes) / sizeof(g_src_suffixes[0])); i++) {
 		strcpy(tmpbuf, savebuf);
@@ -3485,14 +3500,38 @@ bool unload_file(module *m, const char *filename)
 			break;
 	}
 
-	if (!realbuf) {
-		TPL_free(savebuf);
-		TPL_free(tmpbuf);
-		return false;
-	}
-
 	TPL_free(savebuf);
 	TPL_free(tmpbuf);
+	return realbuf;
+}
+#endif
+
+bool source_exists(const char *filename)
+{
+#if !TPL_FEATURE_FILESYSTEM
+	(void)filename;
+	return false;
+#else
+	char *realbuf = find_source(filename);
+	TPL_free(realbuf);
+	return realbuf != NULL;
+#endif
+}
+
+bool unload_file(module *m, const char *filename)
+{
+#if !TPL_FEATURE_FILESYSTEM
+	(void)m;
+	(void)filename;
+	return false;
+#else
+	// Found as load_file finds it, or unloading `f` would miss the `f.pl` that consulting `f` loaded
+
+	char *realbuf = find_source(filename);
+
+	if (!realbuf)
+		return false;
+
 	filename = realbuf;
 	bool ok = unload_realfile(m, filename);
 	TPL_free(realbuf);
@@ -3505,9 +3544,9 @@ module *load_fp(module *m, FILE *fp, const char *filename, bool including, bool 
 	parser *p = parser_create(m);
 	if (!p) return NULL;
 	const char *save_filename = m->filename;
-	const char *save_source = m->source_filename;
+	const char *save_base = g_load_base;
 	if (!including) m->filename = set_known(m, filename);
-	m->source_filename = filename;
+	g_load_base = filename;
 	p->is_consulting = true;
 	p->fp = fp;
 	bool ok = false;
@@ -3531,8 +3570,9 @@ module *load_fp(module *m, FILE *fp, const char *filename, bool including, bool 
 	 while (ok && !p->already_loaded_error && !g_tpl_interrupt);
 
 	if (g_tpl_interrupt) {
+		module_load_done(p);
 		m->filename = save_filename;
-		m->source_filename = save_source;
+		g_load_base = save_base;
 		return NULL;
 	}
 
@@ -3559,9 +3599,10 @@ module *load_fp(module *m, FILE *fp, const char *filename, bool including, bool 
 	}
 
 	ok = !p->error;
+	module_load_done(p);
 	parser_destroy(p);
 	m->filename = save_filename;
-	m->source_filename = save_source;
+	g_load_base = save_base;
 
 	if (!ok)
 		unload_realfile(m, filename);
@@ -3587,7 +3628,7 @@ module *load_file(module *m, const char *filename, bool including, bool init)
 			stream *str = &m->pl->streams[i];
 			char tmpbuf[256];
 			snprintf(tmpbuf, sizeof(tmpbuf), "user");
-			filename = set_loaded(m, tmpbuf, orig_filename);
+			filename = set_loaded(m, tmpbuf, orig_filename, 0);
 
 			if (!sl_get(str->alias, "user_input", NULL))
 				continue;
@@ -3629,42 +3670,7 @@ module *load_file(module *m, const char *filename, bool including, bool init)
 		}
 	}
 
-	size_t len = strlen(filename);
-	char *tmpbuf = TPL_malloc(len + 20);
-	check_error(tmpbuf);
-	memcpy(tmpbuf, filename, len+1);
-
-	if (tmpbuf[0] == '~') {
-		const char *ptr = getenv("HOME");
-
-		if (ptr) {
-			tmpbuf = TPL_realloc(tmpbuf, strlen(ptr) + 10 + strlen(filename) + 20);
-			check_error(tmpbuf);
-			strcpy(tmpbuf, ptr);
-			strcat(tmpbuf, filename+1);
-		}
-	}
-
-	char *savebuf = TPL_strdup(tmpbuf);
-	char *realbuf = NULL;
-
-	// ".pl" is tried before the bare name. Quintus and SICStus both
-	// specified it that way and every system since has followed, so
-	// consulting `f` where both `f.pl` and an executable `f` exist must
-	// pick the source file - see issue #1114.
-	//
-	// The empty suffix in the middle is the bare name; the rest are ours.
-
-	for (unsigned i = 0; i < (sizeof(g_src_suffixes) / sizeof(g_src_suffixes[0])); i++) {
-		strcpy(tmpbuf, savebuf);
-		strcat(tmpbuf, g_src_suffixes[i]);
-
-		if ((realbuf = tpl_realpath(tmpbuf)))
-			break;
-	}
-
-	TPL_free(savebuf);
-	TPL_free(tmpbuf);
+	char *realbuf = find_source(filename);
 
 	if (!realbuf)
 		return NULL;
@@ -3691,7 +3697,9 @@ module *load_file(module *m, const char *filename, bool including, bool init)
 		return m;
 	}
 
-	filename = set_loaded(m, realbuf, orig_filename);
+	struct stat rst = {0};
+	stat(realbuf, &rst);
+	filename = set_loaded(m, realbuf, orig_filename, rst.st_mtime);
 	FILE *fp = fopen(filename, "r");
 
 	if (!fp) {
@@ -3993,7 +4001,7 @@ static module *module_reuse(prolog *pl)
 	m->gex_head = m->gex_tail = NULL;
 	m->p = NULL;
 	m->fp = NULL;
-	m->filename = m->name = m->actual_filename = m->source_filename = NULL;
+	m->filename = m->name = m->actual_filename = NULL;
 	m->index = m->ops = m->defops = m->keyval = m->props = NULL;
 	m->loaded_files = NULL;
 	memset(&m->flags, 0, sizeof(m->flags));
@@ -4005,7 +4013,7 @@ static module *module_reuse(prolog *pl)
 	m->quad_num_vars = m->quad_line_num = 0;
 	m->in_quad = m->quad_recorded = m->user_ops = m->prebuilt = m->from_file = false;
 	m->make_public = m->loaded_properties = m->loading = m->error = false;
-	m->ignore_vars = m->wild_goal_expansion = m->make = m->run_init = false;
+	m->ignore_vars = m->wild_goal_expansion = m->run_init = m->reading_file = false;
 	return m;
 }
 
