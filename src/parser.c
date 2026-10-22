@@ -370,8 +370,21 @@ static cell *make_a_cell(parser *p)
 	return ret;
 }
 
+// A number token's bigint or rational that no cell took: an error came first, or recovery skipped the token
+
+void release_token_value(parser *p)
+{
+	if (!p->v_owned)
+		return;
+
+	unshare_cell(&p->v);
+	p->v.flags = 0;
+	p->v_owned = false;
+}
+
 void parser_reset(parser *p)
 {
+	release_token_value(p);
 	p->was_consing = p->was_string = p->was_partial = p->did_getline = false;
 	p->already_loaded_error = p->do_read_term = p->internal = p->one_shot = false;
 	p->start_term = p->end_of_term = p->end_of_file = p->is_directive  = false;
@@ -396,6 +409,7 @@ static void vartab_free(parser *p);
 void parser_destroy(parser *p)
 {
 	if (!p) return;
+	release_token_value(p);
 	SB_free(p->token);
 	TPL_free(p->save_line);
 
@@ -4291,11 +4305,12 @@ static bool parse_number(parser *p, const char **srcptr, bool neg)
 			mp_int_init_copy(&p->v.val_bigint->ival, &v2);
 			if (neg) p->v.val_bigint->ival.sign = MP_NEG;
 			p->v.flags |= FLAG_INT_BIG | FLAG_MANAGED;
+		p->v_owned = true;
 		} else {
 			set_smallint(&p->v, neg ? -val : val);
-			mp_int_clear(&v2);
 		}
 
+		mp_int_clear(&v2);
 		p->v.tag = TAG_INT;
 		*srcptr = s;
 		return true;
@@ -4313,11 +4328,12 @@ static bool parse_number(parser *p, const char **srcptr, bool neg)
 			mp_int_init_copy(&p->v.val_bigint->ival, &v2);
 			if (neg) p->v.val_bigint->ival.sign = MP_NEG;
 			p->v.flags |= FLAG_INT_BIG | FLAG_MANAGED;
+		p->v_owned = true;
 		} else {
 			set_smallint(&p->v, neg ? -val : val);
-			mp_int_clear(&v2);
 		}
 
+		mp_int_clear(&v2);
 		p->v.tag = TAG_INT;
 		*srcptr = s;
 		return true;
@@ -4335,11 +4351,12 @@ static bool parse_number(parser *p, const char **srcptr, bool neg)
 			mp_int_init_copy(&p->v.val_bigint->ival, &v2);
 			if (neg) p->v.val_bigint->ival.sign = MP_NEG;
 			p->v.flags |= FLAG_INT_BIG | FLAG_MANAGED;
+		p->v_owned = true;
 		} else {
 			set_smallint(&p->v, neg ? -val : val);
-			mp_int_clear(&v2);
 		}
 
+		mp_int_clear(&v2);
 		p->v.tag = TAG_INT;
 		*srcptr = s;
 		return true;
@@ -4365,6 +4382,7 @@ static bool parse_number(parser *p, const char **srcptr, bool neg)
 			p->error_desc = neg ? "min_float" : "max_float";
 			p->error_type = "representation_error";
 			p->error = true;
+			mp_int_clear(&v2);
 			return false;
 		}
 
@@ -4389,6 +4407,7 @@ static bool parse_number(parser *p, const char **srcptr, bool neg)
 			p->error_desc = neg ? "min_float" : "max_float";
 			p->error_type = "representation_error";
 			p->error = true;
+			mp_int_clear(&v2);
 			return false;
 		}
 
@@ -4440,6 +4459,7 @@ static bool parse_number(parser *p, const char **srcptr, bool neg)
 		if (neg) rat->irat.num.sign = MP_NEG;
 		p->v.val_bigint = rat;
 		p->v.flags |= FLAG_INT_BIG | FLAG_MANAGED;
+		p->v_owned = true;
 	} else if (mp_int_to_int(&v2, &val) == MP_RANGE) {
 		p->v.val_bigint = TPL_malloc(sizeof(bigint));
 		ENSURE(p->v.val_bigint);
@@ -4447,6 +4467,7 @@ static bool parse_number(parser *p, const char **srcptr, bool neg)
 		mp_int_init_copy(&p->v.val_bigint->ival, &v2);
 		if (neg) p->v.val_bigint->ival.sign = MP_NEG;
 		p->v.flags |= FLAG_INT_BIG | FLAG_MANAGED;
+		p->v_owned = true;
 	} else {
 		set_smallint(&p->v, neg ? -val : val);
 	}
@@ -4470,6 +4491,7 @@ static bool parse_number(parser *p, const char **srcptr, bool neg)
 		if (!p->do_read_term)
 			fprintf(stderr, "Error: syntax error, parsing number, %s:%d\n", get_loaded(p->m, p->m->filename), p->line_num);
 
+		release_token_value(p);			// no cell will take the bigint now
 		p->error_desc = "unexpected_char";
 		p->error = true;
 		return false;
@@ -4738,6 +4760,7 @@ bool get_token(parser *p, bool last_op, bool was_postfix)
 	const char *src = p->srcptr;
 
 	SB_init(p->token);
+	release_token_value(p);
 	p->v.tag = TAG_INTERNED;
 	p->v.flags = 0;
 	p->v.num_cells = 1;
@@ -6211,6 +6234,7 @@ next_token:
 
 		if (is_bigint(&p->v) || is_rational(&p->v)) {
 			c->val_bigint = p->v.val_bigint;
+			p->v_owned = false;				// the cell has it now: v is only a view of it
 		} else if (is_smallint(&p->v)) {
 			set_smallint(c, get_smallint(&p->v));
 		} else if (p->v.tag == TAG_FLOAT) {

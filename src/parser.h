@@ -48,6 +48,7 @@ void make_blob(cell *tmp, void *ptr);
 cell *make_nil(void);
 
 void clear_clause(clause *cl);
+void release_token_value(parser *p);
 void do_reduce(cell *n);
 cell *get_logical_body(cell *c);
 

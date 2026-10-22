@@ -560,7 +560,9 @@ static bool bif_posix_readlink_2(query *q)
 	buf[n] = '\0';
 	cell tmp;
 	make_cstring(&tmp, buf);
-	return unify(q, p2, p2_ctx, &tmp, q->st.cur_ctx);
+	bool ok = unify(q, p2, p2_ctx, &tmp, q->st.cur_ctx);
+	unshare_cell(&tmp);
+	return ok;
 #else
 	POSIX_FILES_GUARD(q, p1, p1_ctx);
 #endif
@@ -585,7 +587,9 @@ static bool bif_posix_realpath_2(query *q)
 	cell tmp;
 	make_cstring(&tmp, real);
 	free(real);
-	return unify(q, p2, p2_ctx, &tmp, q->st.cur_ctx);
+	bool ok = unify(q, p2, p2_ctx, &tmp, q->st.cur_ctx);
+	unshare_cell(&tmp);
+	return ok;
 #else
 	POSIX_FILES_GUARD(q, p1, p1_ctx);
 #endif

@@ -1937,8 +1937,10 @@ bool do_read_term(query *q, stream *str, cell *p1, pl_ctx p1_ctx, cell *p2, pl_c
 		str->p->is_socket = str->is_socket && !str->ssl;
 		str->p->sock = str->p->is_socket ? str : NULL;
 		if (q->top) str->p->no_fp = q->top->no_fp;
-	} else
+	} else {
+		clear_clause(str->p->cl);		// what an earlier read that errored or returned early left, still counted
 		parser_reset(str->p);
+	}
 
 	// str->p is reused across calls, possibly by a different query on a
 	// long-lived stream, so refresh this every call rather than only
@@ -4398,7 +4400,6 @@ static bool bif_read_term_from_chars_3(query *q)
 		strcat(src, ".");
 
 	bool ok = do_read_term(q, str, p_term, p_term_ctx, p_opts, p_opts_ctx, NULL);
-	parser_reset(str->p);
 	parser_destroy(str->p);
 	TPL_free(save_src);
 
@@ -5454,6 +5455,7 @@ static bool bif_getlines_1(query *q)
 	TPL_free(line);
 
 	if (errno == EINTR) {
+		abandon_list_made(q);
 		stream_clearerr(str);
 		return throw_read_timeout(q, str);
 	}
@@ -5495,6 +5497,7 @@ static bool bif_getlines_2(query *q)
 	TPL_free(line);
 
 	if (errno == EINTR) {
+		abandon_list_made(q);
 		stream_clearerr(str);
 		return throw_read_timeout(q, str);
 	}
@@ -5546,6 +5549,7 @@ static bool bif_getlines_3(query *q)
 	TPL_free(line);
 
 	if (errno == EINTR) {
+		abandon_list_made(q);
 		stream_clearerr(str);
 		return throw_read_timeout(q, str);
 	}
@@ -6024,8 +6028,10 @@ static bool bif_directory_files_2(query *q)
 	closedir(dirp);
 	TPL_free(filename);
 
-	if (failed)
+	if (failed) {
+		abandon_list_made(q);
 		return throw_error(q, p1, p1_ctx, "existence_error", "directory");
+	}
 
 	if (first) {
 		make_atom(&tmp, g_nil_s);
@@ -6832,7 +6838,9 @@ static bool bif_sys_readline_2(query *q)
 	cell tmp;
 	make_string(&tmp, s);
 	TPL_free(s);
-	return unify(q, p2, p2_ctx, &tmp, q->st.cur_ctx);
+	bool ok = unify(q, p2, p2_ctx, &tmp, q->st.cur_ctx);
+	unshare_cell(&tmp);
+	return ok;
 }
 
 static bool bif_sys_put_chars_1(query *q)

@@ -584,7 +584,9 @@ static bool bif_sys_server_tls_2(query *q)
 	cell tmp;
 	make_cstring(&tmp, hostname);
 	// FIX 1: succeed iff the unify succeeds (was inverted).
-	return unify(q, p1, p1_ctx, &tmp, q->st.cur_ctx);
+	bool ok = unify(q, p1, p1_ctx, &tmp, q->st.cur_ctx);
+	unshare_cell(&tmp);
+	return ok;
 }
 
 static bool bif_sys_client_tls_4(query *q)
@@ -623,7 +625,9 @@ static bool bif_sys_current_host_1(query *q)
 
 	cell tmp;
 	make_cstring(&tmp, host);
-	return unify(q, p1, p1_ctx, &tmp, q->st.cur_ctx);
+	bool ok = unify(q, p1, p1_ctx, &tmp, q->st.cur_ctx);
+	unshare_cell(&tmp);
+	return ok;
 }
 
 // '$udp_recv'(+Stream, -Data, -Host, -Port, +Options)
@@ -740,14 +744,19 @@ static bool bif_sys_udp_recv_5(query *q)
 		if (!ok)
 			return throw_error(q, q->st.instr, q->st.cur_ctx, "resource_error", "memory");
 
-		if (!unify(q, p1, p1_ctx, &tmp, q->st.cur_ctx))
+		ok = unify(q, p1, p1_ctx, &tmp, q->st.cur_ctx);
+		unshare_cell(&tmp);
+
+		if (!ok)
 			return false;
 	}
 
 	cell tmp2;
 	make_cstring(&tmp2, host);
+	bool ok = unify(q, p2, p2_ctx, &tmp2, q->st.cur_ctx);
+	unshare_cell(&tmp2);
 
-	if (!unify(q, p2, p2_ctx, &tmp2, q->st.cur_ctx))
+	if (!ok)
 		return false;
 
 	cell tmp3;
@@ -884,7 +893,9 @@ static bool bif_sys_host_address_2(query *q)
 
 	cell tmp;
 	make_cstring(&tmp, ip);
-	return unify(q, p2, p2_ctx, &tmp, q->st.cur_ctx);
+	bool ok = unify(q, p2, p2_ctx, &tmp, q->st.cur_ctx);
+	unshare_cell(&tmp);
+	return ok;
 }
 
 // '$host_addresses'(+Host, -Addresses): all of them, for host_address/3.

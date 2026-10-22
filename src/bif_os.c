@@ -1063,6 +1063,8 @@ static bool process_create_pipe(query *q, posix_spawn_file_actions_t *file_actio
 	return true;
 }
 
+#define RETURN_CLEANUP(x) do { ret = (x); goto done; } while (0)
+
 static bool bif_process_create_3(query *q)
 {
 	GET_FIRST_ARG(p1,atom);
@@ -1071,39 +1073,52 @@ static bool bif_process_create_3(query *q)
 	char *src = NULL;
 	char *filename;
 
+	// Everything taken from here on is given back at done, on the way out of every path.
+
+	int args = 0, envs = 0;
+	char *arguments[MAX_ARGS] = {NULL};
+	char *environments[MAX_ARGS] = {NULL};
+	posix_spawn_file_actions_t file_actions;
+	posix_spawnattr_t attrp;
+	bool spawn_init = false, spawned = false, ret = true;
+	int child_stdin_fd = -1, child_stdout_fd = -1, child_stderr_fd = -1;
+	cell *ppid = NULL;
+	pl_ctx ppid_ctx = 0;
+	pid_t pid;
+	int ok = 0;
+
 	if (is_atom(p1))
 		filename = src = DUP_STRING(q, p1);
 	else
-		return throw_error(q, p1, p1_ctx, "domain_error", "source_sink");
+		RETURN_CLEANUP(throw_error(q, p1, p1_ctx, "domain_error", "source_sink"));
 
 	if (is_iso_list(p1)) {
 		size_t len = scan_is_chars_list(q, p1, p1_ctx, true);
 
 		if (!len)
-			return throw_error(q, p1, p1_ctx, "type_error", "atom");
+			RETURN_CLEANUP(throw_error(q, p1, p1_ctx, "type_error", "atom"));
 
 		src = chars_list_to_string(q, p1, p1_ctx);
 		filename = src;
 	}
 
-	int args = 0, envs = 0;
-	char *arguments[MAX_ARGS] = {NULL};
-	char *environments[MAX_ARGS] = {NULL};
 	arguments[args++] = TPL_strdup(filename);
 
-	for (int i = 0; g_envp[i] != NULL; i++)
+	for (int i = 0; (g_envp[i] != NULL) && (envs < (MAX_ARGS - 1)); i++)
 		environments[envs++] = TPL_strdup(g_envp[i]);
 
 	PROLOG_LIST_HANDLER(p2);
 
 	while (is_iso_list(p2)) {
-		assert(args < MAX_ARGS);
+		if (args >= (MAX_ARGS - 1))
+			RETURN_CLEANUP(throw_error(q, p2, p2_ctx, "resource_error", "args"));
+
 		cell *h = PROLOG_LIST_HEAD(p2);
 		cell *c = deref(q, h, p2_ctx);
 		pl_ctx c_ctx = q->latest_ctx;
 
 		if (!is_atom(c))
-			return throw_error(q, c, c_ctx, "domain_error", "args");
+			RETURN_CLEANUP(throw_error(q, c, c_ctx, "domain_error", "args"));
 
 		arguments[args++] = DUP_STRING(q, c);
 		p2 = PROLOG_LIST_TAIL(p2);
@@ -1112,13 +1127,9 @@ static bool bif_process_create_3(query *q)
 	}
 
 	arguments[args] = NULL;
-	posix_spawn_file_actions_t file_actions;
 	posix_spawn_file_actions_init(&file_actions);
-	posix_spawnattr_t attrp;
 	posix_spawnattr_init(&attrp);
-	cell *ppid = NULL;
-	pl_ctx ppid_ctx = 0;
-	int child_stdin_fd = -1, child_stdout_fd = -1, child_stderr_fd = -1;
+	spawn_init = true;
 	PROLOG_LIST_HANDLER(p3);
 
 	while (is_iso_list(p3)) {
@@ -1136,7 +1147,7 @@ static bool bif_process_create_3(query *q)
 				ppid_ctx = name_ctx;
 			} else if (!CMP_STRING_TO_CSTR(q, c, "detached")) {
 #if (defined(__GLIBC__) && (__GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ < 26))) || !defined(POSIX_SPAWN_SETSID)
-				return throw_error(q, c, c_ctx, "system_error", "posix_spawnattr_setflags");
+				RETURN_CLEANUP(throw_error(q, c, c_ctx, "system_error", "posix_spawnattr_setflags"));
 #else
 				posix_spawnattr_setflags(&attrp, POSIX_SPAWN_SETSID);
 #endif
@@ -1168,7 +1179,7 @@ static bool bif_process_create_3(query *q)
 				// and is null at runtime on the OS actually being targeted.
 #if (defined(__GLIBC__) && (__GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ < 29))) \
 	|| defined(__OpenBSD__)
-				return throw_error(q, c, c_ctx, "system_error", "posix_spawn_file_actions_addchdir");
+				RETURN_CLEANUP(throw_error(q, c, c_ctx, "system_error", "posix_spawn_file_actions_addchdir"));
 #else
 				const char *cwd = C_STR(q, name);
 #if !defined(_WIN32) && !defined(__wasi__) && !defined(__ANDROID__) && !defined(__NetBSD__) \
@@ -1181,6 +1192,10 @@ static bool bif_process_create_3(query *q)
 #endif
 			} else if (!CMP_STRING_TO_CSTR(q, c, "env") && is_list_or_nil(name)) {
 				PROLOG_LIST_HANDLER(name);
+
+				for (int i = 0; i < envs; i++)
+					TPL_free(environments[i]);
+
 				memset(environments, 0, sizeof(environments));
 				envs = 0;
 
@@ -1198,7 +1213,10 @@ static bool bif_process_create_3(query *q)
 							SB_sprintf(pr, "%s=%d", C_STR(q, p1), (int)get_smallint(p2));
 						}
 
-						environments[envs++] = SB_cstr(pr);
+						if (envs < (MAX_ARGS - 1))
+							environments[envs++] = TPL_strdup(SB_cstr(pr));
+
+						SB_free(pr);
 					}
 
 					name = PROLOG_LIST_TAIL(name);
@@ -1223,7 +1241,10 @@ static bool bif_process_create_3(query *q)
 							SB_sprintf(pr, "%s=%d", C_STR(q, p1), (int)get_smallint(p2));
 						}
 
-						environments[envs++] = SB_cstr(pr);
+						if (envs < (MAX_ARGS - 1))
+							environments[envs++] = TPL_strdup(SB_cstr(pr));
+
+						SB_free(pr);
 					}
 
 					name = PROLOG_LIST_TAIL(name);
@@ -1240,7 +1261,7 @@ static bool bif_process_create_3(query *q)
 				pl_ctx ns_ctx = q->latest_ctx;
 				int n;
 				if (!process_create_pipe(q, &file_actions, 0, true, false, &child_stdin_fd, &n))
-					return false;
+					RETURN_CLEANUP(false);
 				cell tmp;
 				make_int(&tmp, n);
 				tmp.flags |= FLAG_INT_STREAM;
@@ -1253,10 +1274,10 @@ static bool bif_process_create_3(query *q)
 				pl_ctx opts_ctx = q->latest_ctx;
 				bool binary = false;
 				if (!process_create_pipe_opts(q, opts, opts_ctx, &binary))
-					return false;
+					RETURN_CLEANUP(false);
 				int n;
 				if (!process_create_pipe(q, &file_actions, 0, true, binary, &child_stdin_fd, &n))
-					return false;
+					RETURN_CLEANUP(false);
 				cell tmp;
 				make_int(&tmp, n);
 				tmp.flags |= FLAG_INT_STREAM;
@@ -1275,7 +1296,7 @@ static bool bif_process_create_3(query *q)
 				pl_ctx ns_ctx = q->latest_ctx;
 				int n;
 				if (!process_create_pipe(q, &file_actions, 1, false, false, &child_stdout_fd, &n))
-					return false;
+					RETURN_CLEANUP(false);
 				cell tmp;
 				make_int(&tmp, n);
 				tmp.flags |= FLAG_INT_STREAM;
@@ -1288,10 +1309,10 @@ static bool bif_process_create_3(query *q)
 				pl_ctx opts_ctx = q->latest_ctx;
 				bool binary = false;
 				if (!process_create_pipe_opts(q, opts, opts_ctx, &binary))
-					return false;
+					RETURN_CLEANUP(false);
 				int n;
 				if (!process_create_pipe(q, &file_actions, 1, false, binary, &child_stdout_fd, &n))
-					return false;
+					RETURN_CLEANUP(false);
 				cell tmp;
 				make_int(&tmp, n);
 				tmp.flags |= FLAG_INT_STREAM;
@@ -1310,7 +1331,7 @@ static bool bif_process_create_3(query *q)
 				pl_ctx ns_ctx = q->latest_ctx;
 				int n;
 				if (!process_create_pipe(q, &file_actions, 2, false, false, &child_stderr_fd, &n))
-					return false;
+					RETURN_CLEANUP(false);
 				cell tmp;
 				make_int(&tmp, n);
 				tmp.flags |= FLAG_INT_STREAM;
@@ -1323,10 +1344,10 @@ static bool bif_process_create_3(query *q)
 				pl_ctx opts_ctx = q->latest_ctx;
 				bool binary = false;
 				if (!process_create_pipe_opts(q, opts, opts_ctx, &binary))
-					return false;
+					RETURN_CLEANUP(false);
 				int n;
 				if (!process_create_pipe(q, &file_actions, 2, false, binary, &child_stderr_fd, &n))
-					return false;
+					RETURN_CLEANUP(false);
 				cell tmp;
 				make_int(&tmp, n);
 				tmp.flags |= FLAG_INT_STREAM;
@@ -1336,19 +1357,24 @@ static bool bif_process_create_3(query *q)
 				int n = get_stream(q, ns);
 				posix_spawn_file_actions_adddup2(&file_actions, fileno(q->pl->streams[n].fp_out), 2);
 			} else
-				return throw_error(q, c, q->latest_ctx, "domain_error", "process_create_option");
+				RETURN_CLEANUP(throw_error(q, c, q->latest_ctx, "domain_error", "process_create_option"));
 		} else
-			return throw_error(q, c, q->latest_ctx, "domain_error", "process_create_option");
+			RETURN_CLEANUP(throw_error(q, c, q->latest_ctx, "domain_error", "process_create_option"));
 
 		p3 = PROLOG_LIST_TAIL(p3);
 		p3 = deref(q, p3, p3_ctx);
 		p3_ctx = q->latest_ctx;
 	}
 
-	pid_t pid;
-	int ok = posix_spawnp(&pid, C_STR(q, p1), &file_actions, &attrp, (char * const*)arguments, (char * const*)environments);
-	posix_spawn_file_actions_destroy(&file_actions);
-	posix_spawnattr_destroy(&attrp);
+	ok = posix_spawnp(&pid, C_STR(q, p1), &file_actions, &attrp, (char * const*)arguments, (char * const*)environments);
+	spawned = true;
+
+done:
+	if (spawn_init) {
+		posix_spawn_file_actions_destroy(&file_actions);
+		posix_spawnattr_destroy(&attrp);
+	}
+
 	TPL_free(src);
 
 	if (child_stdin_fd  != -1) close(child_stdin_fd);
@@ -1360,6 +1386,9 @@ static bool bif_process_create_3(query *q)
 
 	for (int i = 0; i < envs; i++)
 		TPL_free(environments[i]);
+
+	if (!spawned)
+		return ret;
 
 	if (ok != 0)
 		return throw_error(q, p1, p1_ctx, "system_error", "posix_spawnp");
@@ -1374,6 +1403,8 @@ static bool bif_process_create_3(query *q)
 
 	return true;
 }
+
+#undef RETURN_CLEANUP
 
 static bool bif_process_wait_3(query *q)
 {

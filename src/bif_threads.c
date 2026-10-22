@@ -418,6 +418,41 @@ static int new_thread(prolog *pl);
 // Free every struct, live or retired. Nothing is freed before this, so
 // this is the only place they go away.
 
+// What a thread still has at shutdown, the main one always: a retired thread gave all this up already, leaving NULLs.
+
+static void thread_free_leftovers(thread *t)
+{
+	msg *m;
+
+	while ((m = list_pop_front(&t->queue)) != NULL) {
+		unshare_cells(m->c, m->c->num_cells);
+		TPL_free(m);
+	}
+
+	while ((m = list_pop_front(&t->signals)) != NULL) {
+		unshare_cells(m->c, m->c->num_cells);
+		TPL_free(m);
+	}
+
+	if (t->ball) {
+		unshare_cells(t->ball, t->ball->num_cells);
+		TPL_free(t->ball);
+		t->ball = NULL;
+	}
+
+	if (t->exit_code) {
+		unshare_cells(t->exit_code, t->exit_code->num_cells);
+		TPL_free(t->exit_code);
+		t->exit_code = NULL;
+	}
+
+	// The shadow predicates are their modules', destroyed after this: only the thread's own arrays go here.
+
+	TPL_free(t->tl_shadows);
+	TPL_free(t->tl_origs);
+	t->tl_shadows = t->tl_origs = NULL;
+}
+
 void threads_destroy(prolog *pl)
 {
 	for (thread *t = pl->live_head, *next; t; t = next) {
@@ -425,6 +460,7 @@ void threads_destroy(prolog *pl)
 		tasks_destroy(t);
 		sched_destroy(t);
 		gvars_destroy(t);
+		thread_free_leftovers(t);
 		TPL_free(t);
 	}
 
@@ -433,6 +469,7 @@ void threads_destroy(prolog *pl)
 		tasks_destroy(t);
 		sched_destroy(t);
 		gvars_destroy(t);
+		thread_free_leftovers(t);
 		TPL_free(t);
 	}
 

@@ -1048,6 +1048,16 @@ cell *end_list(query *q)
 // end_list() for a list of cells made for it, such as make_cstring()'s: the heap copy took its own reference
 // to each, so the one each was made with goes, or every such string outlives the query.
 
+// A list begun for end_list_made() and given up: release what its cells were made with.
+
+void abandon_list_made(query *q)
+{
+	for (pl_idx i = 0; i < q->tmphp; i++)
+		unshare_cell(q->tmp_heap + i);
+
+	init_tmp_heap(q);
+}
+
 cell *end_list_made(query *q)
 {
 	cell *l = end_list(q);

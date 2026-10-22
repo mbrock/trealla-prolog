@@ -841,6 +841,7 @@ static bool bif_iso_number_chars_2(query *q)
 				"resource_error", "memory");
 		}
 
+		clear_clause(p->cl);				// the last number parsed here: its cell owns any bigint
 		parser_reset(p);
 		p->srcptr = SB_cstr(pr);
 		p->is_number_chars = true;
@@ -1436,6 +1437,7 @@ static bool bif_iso_number_codes_2(query *q)
 				"resource_error", "memory");
 		}
 
+		clear_clause(p->cl);				// the last number parsed here: its cell owns any bigint
 		parser_reset(p);
 		p->srcptr = SB_cstr(pr);
 		p->is_number_chars = true;
@@ -1712,18 +1714,18 @@ static bool do_atom_concat_equal_3(query *q)
 	size_t len3 = C_STRLEN(q, p3);
 	cell tmp;
 	CHECKED(make_slice(q, &tmp, p3, 0, len3/2));
+	bool ok = unify(q, p1, p1_ctx, &tmp, q->st.cur_ctx);
+	unshare_cell(&tmp);
 
-	if (!unify(q, p1, p1_ctx, &tmp, q->st.cur_ctx))
+	if (!ok)
 		return false;
 
 	GET_FIRST_ARG(p1x,atom);
 	GET_NEXT_ARG(p2x,atom_or_var);
 	CHECKED(make_slice(q, &tmp, p3, len3/2, len3/2));
-
-	if (!unify(q, p2x, p2x_ctx, &tmp, q->st.cur_ctx))
-		return false;
-
-	return true;
+	ok = unify(q, p2x, p2x_ctx, &tmp, q->st.cur_ctx);
+	unshare_cell(&tmp);
+	return ok;
 }
 
 // NOTE: this just handles the mode(-,-,+) case...
@@ -4170,7 +4172,7 @@ static bool bif_split_string_4(query *q)
 			skip_padding = false;
 	}
 
-	cell *l = end_list(q);
+	cell *l = end_list_made(q);
 	CHECKED(l);
 	return unify(q, p4, p4_ctx, l, q->st.cur_ctx);
 }

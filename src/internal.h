@@ -1253,6 +1253,7 @@ struct parser_ {
 	bool was_partial:1;
 	bool did_getline:1;
 	bool already_loaded_error:1;
+	bool v_owned:1;						// v holds a bigint or rational no cell has taken yet
 	bool switched_module:1;				// a module/2 directive set p->m->reading_file
 	bool do_read_term:1;
 	bool internal:1;
