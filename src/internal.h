@@ -1293,6 +1293,7 @@ static inline pl_idx vartab_off(const parser *p, unsigned i)
 }
 
 typedef struct loaded_file_ loaded_file;
+typedef struct kept_clause_ kept_clause;
 
 // Predicate indicator...
 
@@ -1317,6 +1318,7 @@ struct module_ {
 	skiplist *index, *ops, *defops, *keyval;
 	skiplist *props;					// which name/arity have $predicate_property clauses
 	loaded_file *loaded_files;
+	kept_clause *kept_head, *kept_tail;	// not from a file being reloaded, to go back after it, see unload_for_reload()
 	list predicates;
 	list buried;						// predicates abolished by destroy_module/1, see module_bury_predicates()
 	prolog_flags flags;

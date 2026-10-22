@@ -5027,7 +5027,7 @@ bool do_load_file(query *q, cell *p1, pl_ctx p1_ctx)
 	if (is_atom(p1)) {
 		char *src = DUP_STRING(q, p1);
 		char *filename = relative_to(loading_base(q->st.m), src);
-		unload_file(q->st.m, filename);
+		unload_for_reload(q->st.m, filename);
 		TPL_free(src);
 
 		if (!reload_file(q->st.m, filename)) {
@@ -5056,7 +5056,7 @@ bool do_load_file(query *q, cell *p1, pl_ctx p1_ctx)
 	char *src = DUP_STRING(q, file);
 	char *filename = relative_to(loading_base(q->st.m), src);
 	TPL_free(src);
-	unload_file(tmp_m, filename);
+	unload_for_reload(tmp_m, filename);
 
 	if (!reload_file(tmp_m, filename)) {
 		module_destroy(tmp_m);

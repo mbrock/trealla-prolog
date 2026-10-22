@@ -1798,7 +1798,7 @@ static bool directive_term(parser *p, cell *c)
 		bool reload = p->is_reconsult && tmp_m && !tmp_m->reading_file && is_known(tmp_m, file);
 
 		if (reload) {
-			unload_file(tmp_m, file);			// what the old copy put there, not what was asserted since
+			unload_for_reload(tmp_m, file);		// what the old copy put there, not what was asserted since
 		} else if (tmp_m) {
 			p->already_loaded_error = true;
 			p->m = tmp_m;

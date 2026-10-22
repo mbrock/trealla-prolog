@@ -3,4 +3,4 @@ load_text [kept] [1]
 selective [kept] [1]
 ensure_loaded [kept] [1]
 changed [kept] [1]
-consult([2])
+consult [kept] [2]

@@ -287,9 +287,9 @@ void make(module *m)
 				printf("%% %s changed\n", ptr->filename);
 
 				if (strcmp(parent_filename, ptr->filename))
-					unload_file(m, ptr->filename);
+					unload_for_reload(m, ptr->filename);
 
-				unload_file(m, parent_filename);
+				unload_for_reload(m, parent_filename);
 				reload_file(m, parent_filename);
 				TPL_free(parent_filename);
 			}
@@ -3391,7 +3391,76 @@ static void rerecord_properties(predicate *pr)
 	if (pr->is_public) push_property(m, name, arity, "public");
 }
 
-static bool unload_realfile(module *m, const char *filename)
+struct kept_clause_ {
+	kept_clause *next;
+	const char *filename;
+	unsigned num_vars;
+	cell cells[];
+};
+
+// A copy of each live clause of pr that filename did not put there, asserted or from another file
+
+static void keep_clauses(module *m, predicate *pr, const char *filename)
+{
+	for (rule *r = pr->head; r; r = r->next) {
+		if (r->dbgen_retracted || (r->filename && !strcmp(r->filename, filename)))
+			continue;
+
+		pl_idx num_cells = r->cl.cells->num_cells;
+		kept_clause *k = TPL_malloc(sizeof(kept_clause) + (sizeof(cell) * num_cells));
+
+		if (!k)
+			continue;
+
+		dup_cells(k->cells, r->cl.cells, num_cells);
+		k->filename = r->filename;
+		k->num_vars = r->cl.num_vars;
+		k->next = NULL;
+
+		if (m->kept_tail)
+			m->kept_tail->next = k;
+		else
+			m->kept_head = k;
+
+		m->kept_tail = k;
+	}
+}
+
+static void drop_kept(module *m)
+{
+	kept_clause *k;
+
+	while ((k = m->kept_head) != NULL) {
+		m->kept_head = k->next;
+		unshare_cells(k->cells, k->cells->num_cells);
+		TPL_free(k);
+	}
+
+	m->kept_tail = NULL;
+}
+
+// After the file's own, as SWI's reload leaves them
+
+static void restore_kept(module *m)
+{
+	kept_clause *k;
+
+	while ((k = m->kept_head) != NULL) {
+		m->kept_head = k->next;
+		rule *r = assertz_to_db(m, k->num_vars, k->cells, false);
+
+		if (r)
+			r->filename = k->filename;
+		else
+			unshare_cells(k->cells, k->cells->num_cells);
+
+		TPL_free(k);
+	}
+
+	m->kept_tail = NULL;
+}
+
+static bool unload_realfile(module *m, const char *filename, bool keep)
 {
 	skiplist *keys = sl_create(NULL, NULL, NULL);
 	predicate **kept = NULL;
@@ -3400,6 +3469,9 @@ static bool unload_realfile(module *m, const char *filename)
 	for (predicate *pr = list_front(&m->predicates); pr; pr = list_next(pr)) {
 		if (pr->filename && strcmp(pr->filename, filename))
 			continue;
+
+		if (keep && pr->is_dynamic && !pr->is_thread_local && !pr->is_abolished)
+			keep_clauses(m, pr, filename);
 
 		const uint64_t k = property_key(m, C_STR(m, &pr->key), get_arity(&pr->key));
 
@@ -3540,11 +3612,12 @@ void forget_file(module *m, const char *filename)
 #endif
 }
 
-bool unload_file(module *m, const char *filename)
+static bool unload_source(module *m, const char *filename, bool keep)
 {
 #if !TPL_FEATURE_FILESYSTEM
 	(void)m;
 	(void)filename;
+	(void)keep;
 	return false;
 #else
 	// Found as load_file finds it, or unloading `f` would miss the `f.pl` that consulting `f` loaded
@@ -3555,10 +3628,22 @@ bool unload_file(module *m, const char *filename)
 		return false;
 
 	filename = realbuf;
-	bool ok = unload_realfile(m, filename);
+	bool ok = unload_realfile(m, filename, keep);
 	TPL_free(realbuf);
 	return ok;
 #endif
+}
+
+bool unload_file(module *m, const char *filename)
+{
+	return unload_source(m, filename, false);
+}
+
+// Before reload_file(), which puts back what was asserted into the file's dynamic predicates since
+
+bool unload_for_reload(module *m, const char *filename)
+{
+	return unload_source(m, filename, true);
 }
 
 static module *load_source_fp(module *m, FILE *fp, const char *filename, bool including, bool init, bool reload)
@@ -3628,7 +3713,7 @@ static module *load_source_fp(module *m, FILE *fp, const char *filename, bool in
 	g_load_base = save_base;
 
 	if (!ok)
-		unload_realfile(m, filename);
+		unload_realfile(m, filename, false);
 
 	return save_m;
 }
@@ -3769,7 +3854,13 @@ module *load_file(module *m, const char *filename, bool including, bool init)
 
 module *reload_file(module *m, const char *filename)
 {
-	return load_source(m, filename, false, true, true);
+	module *save_m = load_source(m, filename, false, true, true);
+	restore_kept(m);
+
+	if (save_m && (save_m != m))
+		restore_kept(save_m);			// a module file's, unloaded by its module/2 directive
+
+	return save_m;
 }
 
 static void module_save_fp(module *m, FILE *fp, int canonical, int dq)
@@ -3854,6 +3945,7 @@ void module_destroy(module *m)
 	parser_destroy(m->p);
 	TPL_free(m->used);
 	clear_loaded(m);
+	drop_kept(m);
 
 	// module_create() links the module only once it is fully built, so a
 	// failure part-way through leaves an unlinked node here.
@@ -4036,6 +4128,7 @@ static module *module_reuse(prolog *pl)
 	quad_reset(m);
 	parser_destroy(m->p);
 	clear_loaded(m);
+	drop_kept(m);
 
 	m->dead_next = NULL;
 	m->orig = NULL;

@@ -40,7 +40,7 @@ main :-
 	write(S, ':- module(tmp_ums, [state/1, version/1]).\n:- dynamic(state/1).\nversion(2).\n'),
 	close(S),
 	load_text(T1, [module(tmp_ums_d)]), show(changed),
-	consult(tmp_ums_state), findall(V, tmp_ums:version(V), Vs), write(consult(Vs)), nl,
+	consult(tmp_ums_state), show(consult),
 	halt.
 EOF
 
