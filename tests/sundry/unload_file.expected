@@ -1,0 +1,7 @@
+loaded([1])
+unloaded([])
+after_make([])
+never_loaded_ok
+instantiation_error
+type_error(source_sink,123)
+type_error(source_sink,[a])

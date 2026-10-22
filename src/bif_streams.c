@@ -5127,6 +5127,18 @@ static bool bif_load_files_2(query *q)
 	return true;
 }
 
+// SWI's, for one file: unload_files/1 takes a list as well.
+
+static bool bif_unload_file_1(query *q)
+{
+	GET_FIRST_ARG(p1,source_sink);
+
+	if (is_iso_list(p1))
+		return throw_error(q, p1, p1_ctx, "type_error", "source_sink");
+
+	return do_unload_file(q, p1, p1_ctx);
+}
+
 static bool bif_unload_files_1(query *q)
 {
 	GET_FIRST_ARG(p1,source_sink);
@@ -7660,6 +7672,7 @@ builtins g_streams_bifs[] =
 	{"getlines", 3, bif_getlines_3, "+stream,-list,+list", false, false, BLAH},
 #if TPL_FEATURE_FILESYSTEM
 	{"load_files", 2, bif_load_files_2, "+atom,+list", false, false, BLAH},
+	{"unload_file", 1, bif_unload_file_1, "+source_sink", false, false, BLAH},
 	{"unload_files", 1, bif_unload_files_1, "+atom", false, false, BLAH},
 	{"make", 0, bif_make_0, NULL, false, false, BLAH},
 	{"getfile", 2, bif_getfile_2, "+source_sink,-list", false, false, BLAH},
