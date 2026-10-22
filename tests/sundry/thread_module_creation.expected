@@ -1,0 +1,4 @@
+load-tmc_load-true-[ok]
+switch-tmc_switch-true-[ok]
+main(load)
+main(switch)
