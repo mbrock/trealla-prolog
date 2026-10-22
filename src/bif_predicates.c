@@ -4,6 +4,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -5076,6 +5077,28 @@ static bool os_random_bytes(unsigned char *buf, size_t len)
 	(void) buf;							// no OS random source to ask
 	(void) len;
 	return false;
+#elif defined(__GLIBC__) && (__GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ < 25))
+	int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);	// getentropy arrived in glibc 2.25
+
+	if (fd < 0)
+		return false;
+
+	while (len) {
+		ssize_t n = read(fd, buf, len);
+
+		if ((n < 0) && (errno == EINTR))
+			continue;
+
+		if (n <= 0) {
+			close(fd);
+			return false;
+		}
+
+		buf += n;
+		len -= n;
+	}
+
+	close(fd);
 #else
 	while (len) {
 		size_t n = len < 256 ? len : 256;		// getentropy's per-call limit
