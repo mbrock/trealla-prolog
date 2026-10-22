@@ -1629,7 +1629,7 @@ bool wrap_ffi_predicate(query *q, builtins *ptr)
 			cnt++;
 		}
 
-		if (!unify(q, c, c_ctx, end_list(q), q->st.cur_ctx))
+		if (!unify(q, c, c_ctx, end_list_made(q), q->st.cur_ctx))
 			return false;
 	}
 

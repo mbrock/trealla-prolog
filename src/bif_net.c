@@ -901,10 +901,9 @@ static bool bif_sys_host_addresses_2(query *q)
 		cell tmp;
 		make_cstring(&tmp, ips[i]);
 		append_list(q, &tmp);
-		unshare_cell(&tmp);
 	}
 
-	cell *l = n ? end_list(q) : make_nil();
+	cell *l = n ? end_list_made(q) : make_nil();
 	CHECKED(l);
 	return unify(q, p2, p2_ctx, l, q->st.cur_ctx);
 }

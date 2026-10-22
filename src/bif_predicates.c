@@ -2916,7 +2916,7 @@ static bool bif_sys_current_prolog_flag_2(query *q)
 			append_list(q, &tmp);
 		}
 
-		cell *l = end_list(q);
+		cell *l = end_list_made(q);
 		CHECKED(l);
 		return unify(q, p2, p2_ctx, l, q->st.cur_ctx);
 	} else if (!CMP_STRING_TO_CSTR(q, p1, "raw_argv")) {
@@ -2930,7 +2930,7 @@ static bool bif_sys_current_prolog_flag_2(query *q)
 			append_list(q, &tmp);
 		}
 
-		cell *l = end_list(q);
+		cell *l = end_list_made(q);
 		CHECKED(l);
 		return unify(q, p2, p2_ctx, l, q->st.cur_ctx);
 	} else if (!CMP_STRING_TO_CSTR(q, p1, "unknown")) {
@@ -3476,7 +3476,7 @@ static bool bif_source_info_2(query *q)
 		append_list(q, tmp);
 	}
 
-	cell *l = end_list(q);
+	cell *l = end_list_made(q);
 	CHECKED(l);
 	return unify(q, p2, p2_ctx, l, q->st.cur_ctx);
 }
@@ -5759,21 +5759,8 @@ static bool do_atomic_list_concat_split(query *q, cell *p1, pl_ctx p1_ctx, cell 
 	}
 
 	TPL_free(sep_alloc);
-	cell *l = end_list(q);
+	cell *l = end_list_made(q);
 	CHECKED(l);
-
-	// end_list() took its own reference to every piece, so the ones
-	// make_cstringn() gave us are now redundant and must be released
-	// or the strings outlive the query...
-
-	cell *c = l;
-
-	while (is_iso_list(c)) {
-		cell *h = c + 1;
-		c = h + h->num_cells;
-		unshare_cell(h);
-	}
-
 	return unify(q, p1, p1_ctx, l, q->st.cur_ctx);
 }
 

@@ -5299,7 +5299,7 @@ static bool bif_getfile_2(query *q)
 
 	TPL_free(line);
 	fclose(fp);
-	cell *l = end_list(q);
+	cell *l = end_list_made(q);
 	CHECKED(l);
 	unify(q, p2, p2_ctx, l, q->st.cur_ctx);
 	return true;
@@ -5418,7 +5418,7 @@ static bool bif_getfile_3(query *q)
 
 	TPL_free(line);
 	fclose(fp);
-	cell *l = end_list(q);
+	cell *l = end_list_made(q);
 	CHECKED(l);
 	unify(q, p2, p2_ctx, l, q->st.cur_ctx);
 	return true;
@@ -5458,7 +5458,7 @@ static bool bif_getlines_1(query *q)
 		return throw_read_timeout(q, str);
 	}
 
-	cell *l = end_list(q);
+	cell *l = end_list_made(q);
 	CHECKED(l);
 	unify(q, p1, p1_ctx, l, q->st.cur_ctx);
 	return true;
@@ -5499,7 +5499,7 @@ static bool bif_getlines_2(query *q)
 		return throw_read_timeout(q, str);
 	}
 
-	cell *l = end_list(q);
+	cell *l = end_list_made(q);
 	CHECKED(l);
 	unify(q, p1, p1_ctx, l, q->st.cur_ctx);
 	return true;
@@ -5550,7 +5550,7 @@ static bool bif_getlines_3(query *q)
 		return throw_read_timeout(q, str);
 	}
 
-	cell *l = end_list(q);
+	cell *l = end_list_made(q);
 	CHECKED(l);
 	unify(q, p1, p1_ctx, l, q->st.cur_ctx);
 	return true;
@@ -6032,7 +6032,7 @@ static bool bif_directory_files_2(query *q)
 		return unify(q, p2, p2_ctx, &tmp, q->st.cur_ctx);
 	}
 
-	cell *l = end_list(q);
+	cell *l = end_list_made(q);
 	bool ok = unify(q, p2, p2_ctx, l, q->st.cur_ctx);
 	return ok;
 }

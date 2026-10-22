@@ -1334,6 +1334,10 @@ bool bif_sys_member_3(query *q)
 	if (is_list(t) || is_var(t)) {
 		member_save(q, e, t, t_ctx);
 		CHECKED(push_choice(q));
+	} else {
+		// The last: nothing retries, and backtracking over the frame never unshares its slots, so the saved tail goes now
+		unshare_cell(&e->c);
+		memset(e, 0, sizeof(slot));
 	}
 
 	return unify(q, p1, p1_ctx, h, h_ctx);

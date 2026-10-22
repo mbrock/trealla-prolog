@@ -1045,6 +1045,21 @@ cell *end_list(query *q)
 	return tmp;
 }
 
+// end_list() for a list of cells made for it, such as make_cstring()'s: the heap copy took its own reference
+// to each, so the one each was made with goes, or every such string outlives the query.
+
+cell *end_list_made(query *q)
+{
+	cell *l = end_list(q);
+
+	if (l && !is_nil(l)) {
+		for (pl_idx i = 0; i < l->num_cells; i++)
+			unshare_cell(l + i);
+	}
+
+	return l;
+}
+
 cell *end_list_unsafe(query *q)
 {
 	cell *tmp = alloc_tmp(q, 1);
