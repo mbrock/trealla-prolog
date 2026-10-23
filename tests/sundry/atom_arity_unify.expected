@@ -1,0 +1,15 @@
+literal ok
+atom_chars ok
+atom_codes ok
+atom_concat ok
+sub_atom ok
+long_name ok
+nested ok
+list ok
+not_unify ok
+occurs_check ok
+subsumes ok
+head ok
+head_atom ok
+indexed ok
+still_atom ok
