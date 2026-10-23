@@ -184,6 +184,7 @@ bool thread_exit_cancelled(query *q)
 	CHECKED(tmp);
 	make_instr(tmp, new_atom(q->pl, "exited"), NULL, 1, 1);
 	make_atom(tmp+1, new_atom(q->pl, "cancelled"));
+	acquire_lock(&t->guard);			// thread_property/2 reads it under this
 
 	if (t->exit_code) {
 		unshare_cells(t->exit_code, t->exit_code->num_cells);
@@ -195,7 +196,6 @@ bool thread_exit_cancelled(query *q)
 	// The thread_exit(cancelled) still queued is done with: left there, it
 	// would end the at_exit goal before that ran a goal.
 
-	acquire_lock(&t->guard);
 	msg *m;
 
 	while ((m = list_pop_front(&t->signals)) != NULL) {
@@ -1274,12 +1274,16 @@ static void *start_routine_thread_create(thread *t)
 
 	// The ball is already a detached image - find_exception_handler rebased it from 0 - so keep it flat, a plain copy that join can import like a thread message. dup_cells_by_ref reattached its variables to a frame the joiner never had.
 
+	cell *ball = NULL;
+
 	if (t->q->did_unhandled_exception && t->q->ball) {
-		cell *tmp = TPL_calloc(t->q->ball->num_cells+1, sizeof(cell));
-		dup_cells(tmp, t->q->ball, t->q->ball->num_cells);
-		t->ball = tmp;
+		ball = TPL_calloc(t->q->ball->num_cells+1, sizeof(cell));
+		if (ball) dup_cells(ball, t->q->ball, t->q->ball->num_cells);
 	}
 
+	// Under the guard, as thread_property/2 reads how it ended under it (#1178).
+	acquire_lock(&t->guard);
+	t->ball = ball;
 	t->is_exception = t->q->did_unhandled_exception && t->ball;
 
 	// A goal that simply failed is not an exception and leaves no exit
@@ -1294,6 +1298,7 @@ static void *start_routine_thread_create(thread *t)
 
 	t->is_failed = !t->q->halt && !t->is_exception;
 	t->is_finished = true;				// last, so whoever sees it finished sees how it ended
+	release_lock(&t->guard);
 
 	if (t->at_exit_goal) {
 		execute(t->q, t->at_exit_goal, t->at_exit_goal_num_vars);
@@ -1646,9 +1651,6 @@ static bool bif_thread_join_2(query *q)
 		const frame *f = GET_CURR_FRAME();
 		cell *tmp = import_term(q, t->exit_code, q->st.cur_ctx);
 		CHECKED(tmp);
-		unshare_cells(t->exit_code, t->exit_code->num_cells);
-		TPL_free(t->exit_code);
-		t->exit_code = NULL;
 		GET_FIRST_ARG(p1,nonvar);
 		GET_NEXT_ARG(p2,any);
 		unify(q, p2, p2_ctx, tmp, q->st.cur_ctx);
@@ -1684,6 +1686,12 @@ static bool bif_thread_join_2(query *q)
 		unshare_cells(t->ball, t->ball->num_cells);
 		TPL_free(t->ball);
 		t->ball = NULL;
+	}
+
+	if (t->exit_code) {
+		unshare_cells(t->exit_code, t->exit_code->num_cells);
+		TPL_free(t->exit_code);
+		t->exit_code = NULL;
 	}
 
 	if (t->at_exit_goal) {
@@ -2010,39 +2018,123 @@ static bool bif_thread_exit_1(query *q)
 	CHECKED(tmp2);
 	make_instr(tmp2, new_atom(q->pl, "exited"), NULL, 1, tmp->num_cells);
 	dup_cells(tmp2+1, tmp, tmp->num_cells);
+	acquire_lock(&t->guard);			// an at_exit goal sets it while thread_property/2 may read it
+
+	if (t->exit_code) {
+		unshare_cells(t->exit_code, t->exit_code->num_cells);
+		TPL_free(t->exit_code);
+	}
+
 	t->exit_code = tmp2;
+	release_lock(&t->guard);
 	q->halt_code = 0;
 	q->halt = t->q->error = true;
 	THREAD_DEBUG DUMP_TERM(" -  ", q->st.instr, q->st.cur_ctx, 1);
 	return true;
 }
 
-static bool do_thread_property_pin_both(query *q)
+// Detached cleanup and thread_join/2 free t's alias, ball and exit_code
+// under t->guard, so thread_property/2 reads them under it (#1178). False,
+// with the guard released, once t has retired or is retiring.
+
+static bool lock_live_thread(thread *t, int chan)
+{
+	acquire_lock(&t->guard);
+
+	if (t->is_active && (t->chan == chan) && (!t->is_finished || t->q))
+		return true;
+
+	release_lock(&t->guard);
+	return false;
+}
+
+// status(S) for t, on q's heap. Call with t->guard held.
+
+static cell *make_thread_status(query *q, thread *t)
+{
+	cell *tmp;
+
+	if (!t->is_finished) {
+		if (!(tmp = alloc_heap(q, 2))) return NULL;
+		make_instr(tmp, new_atom(q->pl, "status"), NULL, 1, 1);
+		make_atom(tmp+1, new_atom(q->pl, "running"));
+	} else if (t->is_exception && t->ball) {
+		if (!(tmp = alloc_heap(q, 2+t->ball->num_cells))) return NULL;
+		make_instr(tmp, new_atom(q->pl, "status"), NULL, 1, 1+t->ball->num_cells);
+		make_instr(tmp+1, new_atom(q->pl, "exception"), NULL, 1, t->ball->num_cells);
+		dup_cells(tmp+2, t->ball, t->ball->num_cells);
+	} else if (t->exit_code) {
+		// thread_exit/1 stores its argument already wrapped as
+		// exited/1, so hand that back whole - this reported a bare
+		// `false` for it. And a goal that merely failed is is_failed,
+		// not exit_code, which made it report `true`; thread_join/2 has
+		// always read the right flag, so the two disagreed.
+		if (!(tmp = alloc_heap(q, 1+t->exit_code->num_cells))) return NULL;
+		make_instr(tmp, new_atom(q->pl, "status"), NULL, 1, t->exit_code->num_cells);
+		dup_cells(tmp+1, t->exit_code, t->exit_code->num_cells);
+	} else {
+		if (!(tmp = alloc_heap(q, 2))) return NULL;
+		make_instr(tmp, new_atom(q->pl, "status"), NULL, 1, 1);
+		make_atom(tmp+1, t->is_failed?g_false_s:g_true_s);
+	}
+
+	return tmp;
+}
+
+// alias(A) for t, on q's heap, or NULL if it has none. Call with t->guard held.
+
+static cell *make_thread_alias(query *q, thread *t)
+{
+	if (!t->alias)		// created without one: the property does not hold
+		return NULL;
+
+	cell *tmp = alloc_heap(q, 2);
+	if (!tmp) return NULL;
+	make_instr(tmp, new_atom(q->pl, "alias"), NULL, 1, 1);
+	make_cstring(tmp+1, t->alias);
+	return tmp;
+}
+
+// A named thread that has gone is an error; one met while enumerating is skipped.
+
+static bool thread_gone(query *q, cell *p1, pl_ctx p1_ctx, bool enumerating)
+{
+	if (enumerating)
+		return false;
+
+	THREAD_DEBUG DUMP_TERM(" - ", q->st.instr, q->st.cur_ctx, 1);
+	return throw_error(q, p1, p1_ctx, "existence_error", "thread_object");
+}
+
+static bool do_thread_property_pin_both(query *q, bool enumerating)
 {
 	GET_FIRST_ARG(p1,nonvar);
 	GET_NEXT_ARG(p2,nonvar);
 	int n = get_thread(q, p1);
+	thread *t = n < 0 ? NULL : find_thread_by_id(q->pl, n);
 
-	if (n < 0) {
-		THREAD_DEBUG DUMP_TERM(" - ", q->st.instr, q->st.cur_ctx, 1);
-		return throw_error(q, p1, p1_ctx, "existence_error", "thread_object");
-	}
-
-	thread *t = find_thread_by_id(q->pl, n);
+	if (!t)
+		return thread_gone(q, p1, p1_ctx, enumerating);
 
 	if (get_arity(p2) != 1)
 		return throw_error(q, p2, p2_ctx, "domain_error", "thread_property");
 
 	cell *c = deref(q, p2, p2_ctx);
 	pl_ctx c_ctx = q->latest_ctx;
+	cell *tmp;
 
 	if (!CMP_STRING_TO_CSTR(q, p2, "alias")) {
-		if (!t->alias)		// created without one: the property does not hold
+		if (!lock_live_thread(t, n))
+			return thread_gone(q, p1, p1_ctx, enumerating);
+
+		bool has_alias = t->alias;
+		tmp = make_thread_alias(q, t);
+		release_lock(&t->guard);
+
+		if (!has_alias)
 			return false;
 
-		cell *tmp = alloc_heap(q, 2);
-		make_instr(tmp, new_atom(q->pl, "alias"), NULL, 1, 1);
-		make_cstring(tmp+1, t->alias);
+		CHECKED(tmp);
 
 		if (!unify(q, c, c_ctx, tmp, q->st.cur_ctx)) {
 			unshare_cell(tmp+1);
@@ -2051,41 +2143,18 @@ static bool do_thread_property_pin_both(query *q)
 
 		return true;
 	} else if (!CMP_STRING_TO_CSTR(q, p2, "detached")) {
-		cell *tmp = alloc_heap(q, 2);
+		tmp = alloc_heap(q, 2);
+		CHECKED(tmp);
 		make_instr(tmp, new_atom(q->pl, "detached"), NULL, 1, 1);
 		make_atom(tmp+1, t->is_detached?g_true_s:g_false_s);
 		return unify(q, c, c_ctx, tmp, q->st.cur_ctx);
 	} else if (!CMP_STRING_TO_CSTR(q, p2, "status")) {
-		if (!t->is_finished) {
-			cell *tmp = alloc_heap(q, 2);
-			make_instr(tmp, new_atom(q->pl, "status"), NULL, 1, 1);
-			make_atom(tmp+1, new_atom(q->pl, "running"));
-			return unify(q, c, c_ctx, tmp, q->st.cur_ctx);
-		}
+		if (!lock_live_thread(t, n))
+			return thread_gone(q, p1, p1_ctx, enumerating);
 
-		if (t->is_exception) {
-			cell *tmp = alloc_heap(q, 2+t->ball->num_cells);
-			make_instr(tmp, new_atom(q->pl, "status"), NULL, 1, 1+t->ball->num_cells);
-			make_instr(tmp+1, new_atom(q->pl, "exception"), NULL, 1, t->ball->num_cells);
-			dup_cells(tmp+2, t->ball, t->ball->num_cells);
-			return unify(q, c, c_ctx, tmp, q->st.cur_ctx);
-		}
-
-		// thread_exit/1 stores its argument already wrapped as
-		// exited/1, so hand that back whole - this reported a bare
-		// `false` for it. And a goal that merely failed is is_failed,
-		// not exit_code, which made it report `true`; thread_join/2 has
-		// always read the right flag, so the two disagreed.
-		if (t->exit_code) {
-			cell *tmp = alloc_heap(q, 1+t->exit_code->num_cells);
-			make_instr(tmp, new_atom(q->pl, "status"), NULL, 1, t->exit_code->num_cells);
-			dup_cells(tmp+1, t->exit_code, t->exit_code->num_cells);
-			return unify(q, c, c_ctx, tmp, q->st.cur_ctx);
-		}
-
-		cell *tmp = alloc_heap(q, 2);
-		make_instr(tmp, new_atom(q->pl, "status"), NULL, 1, 1);
-		make_atom(tmp+1, t->is_failed?g_false_s:g_true_s);
+		tmp = make_thread_status(q, t);
+		release_lock(&t->guard);
+		CHECKED(tmp);
 		return unify(q, c, c_ctx, tmp, q->st.cur_ctx);
 	} else
 		return throw_error(q, p2, p2_ctx, "domain_error", "thread_property");
@@ -2119,21 +2188,19 @@ static bool do_thread_property_pin_property(query *q)
 	}
 
 	unify(q, p1, p1_ctx, &tmp, q->st.cur_ctx);
-	return do_thread_property_pin_both(q);
+	return do_thread_property_pin_both(q, true);
 }
 
-static bool do_thread_property_pin_id(query *q)
+static bool do_thread_property_pin_id(query *q, bool enumerating)
 {
 	GET_FIRST_ARG(p1,nonvar);
 	GET_NEXT_ARG(p2,any);
 	int n = get_thread(q, p1);
+	thread *t = n < 0 ? NULL : find_thread_by_id(q->pl, n);
 
-	if (n < 0) {
-		THREAD_DEBUG DUMP_TERM(" - ", q->st.instr, q->st.cur_ctx, 1);
-		return throw_error(q, p1, p1_ctx, "existence_error", "thread_object");
-	}
+	if (!t)
+		return thread_gone(q, p1, p1_ctx, enumerating);
 
-	thread *t = find_thread_by_id(q->pl, n);
 	unsigned i = 0;
 
 	if (q->retry)
@@ -2141,65 +2208,54 @@ static bool do_thread_property_pin_id(query *q)
 	else
 		q->st.v2 = 0;
 
-	// An object created without an alias has no alias property at all,
-	// rather than one carrying a null string - which is what
-	// make_cstring() crashed on. Skip that slot, keeping v2 in step so
-	// the next retry moves on instead of repeating this property.
-
-	if ((i == 0) && !t->alias)
-		q->st.v2 = i = 1;
+	cell *tmp = NULL;
 
 	if (i == 0) {
-		CHECKED(push_choice(q));
-		cell *tmp = alloc_heap(q, 2);
-		make_instr(tmp, new_atom(q->pl, "alias"), NULL, 1, 1);
-		make_cstring(tmp+1, t->alias);
+		if (!lock_live_thread(t, n))
+			return thread_gone(q, p1, p1_ctx, enumerating);
 
+		bool has_alias = t->alias;
+		tmp = make_thread_alias(q, t);
+		release_lock(&t->guard);
+
+		// An object created without an alias has no alias property at all,
+		// rather than one carrying a null string - which is what
+		// make_cstring() crashed on. Skip that slot, keeping v2 in step so
+		// the next retry moves on instead of repeating this property.
+
+		if (!has_alias)
+			q->st.v2 = i = 1;
+		else
+			CHECKED(tmp);
+	}
+
+	if (i <= 1)
+		CHECKED(push_choice(q));
+
+	if (i == 0) {
 		if (!unify(q, p2, p2_ctx, tmp, q->st.cur_ctx)) {
 			unshare_cell(tmp+1);
 			return false;
 		}
 
 		return true;
-	} else if (i == 1) {
-		CHECKED(push_choice(q));
-		cell *tmp = alloc_heap(q, 2);
+	}
+
+	if (i == 1) {
+		tmp = alloc_heap(q, 2);
+		CHECKED(tmp);
 		make_instr(tmp, new_atom(q->pl, "detached"), NULL, 1, 1);
 		make_atom(tmp+1, t->is_detached?g_true_s:g_false_s);
 		return unify(q, p2, p2_ctx, tmp, q->st.cur_ctx);
-	} else {
-		if (!t->is_finished) {
-			cell *tmp = alloc_heap(q, 2);
-			make_instr(tmp, new_atom(q->pl, "status"), NULL, 1, 1);
-			make_atom(tmp+1, new_atom(q->pl, "running"));
-			return unify(q, p2, p2_ctx, tmp, q->st.cur_ctx);
-		}
-
-		if (t->is_exception) {
-			cell *tmp = alloc_heap(q, 2+t->ball->num_cells);
-			make_instr(tmp, new_atom(q->pl, "status"), NULL, 1, 1+t->ball->num_cells);
-			make_instr(tmp+1, new_atom(q->pl, "exception"), NULL, 1, t->ball->num_cells);
-			dup_cells(tmp+2, t->ball, t->ball->num_cells);
-			return unify(q, p2, p2_ctx, tmp, q->st.cur_ctx);
-		}
-
-		// thread_exit/1 stores its argument already wrapped as
-		// exited/1, so hand that back whole - this reported a bare
-		// `false` for it. And a goal that merely failed is is_failed,
-		// not exit_code, which made it report `true`; thread_join/2 has
-		// always read the right flag, so the two disagreed.
-		if (t->exit_code) {
-			cell *tmp = alloc_heap(q, 1+t->exit_code->num_cells);
-			make_instr(tmp, new_atom(q->pl, "status"), NULL, 1, t->exit_code->num_cells);
-			dup_cells(tmp+1, t->exit_code, t->exit_code->num_cells);
-			return unify(q, p2, p2_ctx, tmp, q->st.cur_ctx);
-		}
-
-		cell *tmp = alloc_heap(q, 2);
-		make_instr(tmp, new_atom(q->pl, "status"), NULL, 1, 1);
-		make_atom(tmp+1, t->is_failed?g_false_s:g_true_s);
-		return unify(q, p2, p2_ctx, tmp, q->st.cur_ctx);
 	}
+
+	if (!lock_live_thread(t, n))
+		return thread_gone(q, p1, p1_ctx, enumerating);
+
+	tmp = make_thread_status(q, t);
+	release_lock(&t->guard);
+	CHECKED(tmp);
+	return unify(q, p2, p2_ctx, tmp, q->st.cur_ctx);
 }
 
 static bool do_thread_property_wild(query *q)
@@ -2231,7 +2287,7 @@ static bool do_thread_property_wild(query *q)
 	}
 
 	unify(q, p1, p1_ctx, &tmp, q->st.cur_ctx);
-	return do_thread_property_pin_id(q);
+	return do_thread_property_pin_id(q, true);
 }
 
 static bool bif_thread_property_2(query *q)
@@ -2240,15 +2296,18 @@ static bool bif_thread_property_2(query *q)
 	GET_FIRST_ARG(p1,any);
 	GET_NEXT_ARG(p2,any);
 
-	if (is_nonvar(p1) && !check_thread(p1))
+	// Asked once: a thread retiring between two asks sent a handle to the enumerating cases.
+	const bool is_thread = is_nonvar(p1) && check_thread(p1);
+
+	if (is_nonvar(p1) && !is_thread)
 		return false;
 
 	bool ok = false;
 
-	if (check_thread(p1) && !is_var(p2))
-		ok = do_thread_property_pin_both(q);
-	else if (check_thread(p1))
-		ok = do_thread_property_pin_id(q);
+	if (is_thread && !is_var(p2))
+		ok = do_thread_property_pin_both(q, false);
+	else if (is_thread)
+		ok = do_thread_property_pin_id(q, false);
 	else if (!is_var(p2))
 		ok = do_thread_property_pin_property(q);
 	else

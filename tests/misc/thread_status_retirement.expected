@@ -1,0 +1,7 @@
+join_status_agrees
+[detached(false),status(true)]
+[alias(probe),detached(false),status(true)]
+passed(bound)
+passed(properties)
+passed(threads)
+passed(all)
